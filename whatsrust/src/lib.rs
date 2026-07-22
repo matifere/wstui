@@ -1,5 +1,5 @@
 use std::{
-    ffi::{c_char, c_void, CStr, CString},
+    ffi::{CStr, CString, c_char, c_void},
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -255,6 +255,8 @@ unsafe extern "C" {
     fn C_PairPhone(phone: *const c_char) -> *const c_char;
     fn C_DownloadFile(file_id: *const c_char, base_path: *const c_char) -> u8;
 
+    fn C_MarkAsRead(msg_id: *const c_char, chat_jid: CJID, sender_jid: CJID);
+
     fn C_SetMessageHandler(message_cb: CMessageCallback, data: *mut c_void);
     fn C_SetEventHandler(event_cb: CEventCallback, data: *mut c_void);
     fn C_SetLogHandler(log_fn: CLogCallback, data: *mut c_void);
@@ -271,6 +273,13 @@ pub fn download_file(file_id: &FileId, base_path: &Path) -> Result<(), DownloadF
     } else {
         Err(DownloadFailed)
     }
+}
+
+pub fn mark_as_read(msg_id: &MessageId, chat_jid: &JID, sender_jid: &JID) {
+    let msg_id_c = CString::new(msg_id.as_ref()).unwrap();
+    let chat_jid_c = CJID::from(chat_jid);
+    let sender_jid_c = CJID::from(sender_jid);
+    unsafe { C_MarkAsRead(msg_id_c.as_ptr(), chat_jid_c, sender_jid_c) }
 }
 
 pub fn pair_phone(phone: &str) -> String {

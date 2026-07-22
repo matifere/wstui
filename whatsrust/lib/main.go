@@ -996,6 +996,24 @@ func C_GetChatSettings(cjid C.JID) C.ChatSettings {
 	}
 }
 
+//export C_MarkAsRead
+func C_MarkAsRead(msg_id *C.char, chat_jid C.JID, sender_jid C.JID) {
+	ctx := context.Background()
+	timeRead := time.Now()
+
+	msgIds := []types.MessageID{
+		C.GoString(msg_id),
+	}
+
+	client.MarkRead(
+		ctx,
+		msgIds,
+		timeRead,
+		cToJid(chat_jid),
+		cToJid(sender_jid),
+	)
+}
+
 //export C_Disconnect
 func C_Disconnect() {
 	client.Disconnect()
