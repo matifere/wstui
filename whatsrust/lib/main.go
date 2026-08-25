@@ -997,12 +997,16 @@ func C_GetChatSettings(cjid C.JID) C.ChatSettings {
 }
 
 //export C_MarkAsRead
-func C_MarkAsRead(msg_id *C.char, chat_jid C.JID, sender_jid C.JID) {
+func C_MarkAsRead(msgs_id **C.char, num_msg C.size_t, chat_jid C.JID, sender_jid C.JID) {
 	ctx := context.Background()
 	timeRead := time.Now()
 
-	msgIds := []types.MessageID{
-		C.GoString(msg_id),
+	slice := unsafe.Slice(msgs_id, num_msg)
+
+	msgIds := []types.MessageID{}
+	for _, msg := range slice {
+		msgId := C.GoString(msg)
+		msgIds = append(msgIds, types.MessageID(msgId))
 	}
 
 	client.MarkRead(

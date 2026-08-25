@@ -255,7 +255,7 @@ unsafe extern "C" {
     fn C_PairPhone(phone: *const c_char) -> *const c_char;
     fn C_DownloadFile(file_id: *const c_char, base_path: *const c_char) -> u8;
 
-    fn C_MarkAsRead(msg_id: *const c_char, chat_jid: CJID, sender_jid: CJID);
+    fn C_MarkAsRead(msg_id: *const *const c_char, num_msg: usize, chat_jid: CJID, sender_jid: CJID);
 
     fn C_SetMessageHandler(message_cb: CMessageCallback, data: *mut c_void);
     fn C_SetEventHandler(event_cb: CEventCallback, data: *mut c_void);
@@ -275,11 +275,17 @@ pub fn download_file(file_id: &FileId, base_path: &Path) -> Result<(), DownloadF
     }
 }
 
-pub fn mark_as_read(msg_id: &MessageId, chat_jid: &JID, sender_jid: &JID) {
-    let msg_id_c = CString::new(msg_id.as_ref()).unwrap();
+pub fn mark_as_read(msg_id: &[MessageId], chat_jid: &JID, sender_jid: &JID) {
+    // let msg_id_c = CString::new(msg_id.as_ref()).unwrap();
+    let msg_ids_c: Vec<CString> = msg_id
+        .iter()
+        .map(|id| CString::new(id.as_ref()).unwrap())
+        .collect();
+    let c_ptr_msgs = msg_ids_c.iter().map(|s| s.as_ptr()).collect::<Vec<_>>();
+
     let chat_jid_c = CJID::from(chat_jid);
     let sender_jid_c = CJID::from(sender_jid);
-    unsafe { C_MarkAsRead(msg_id_c.as_ptr(), chat_jid_c, sender_jid_c) }
+    unsafe { C_MarkAsRead(c_ptr_msgs.as_ptr(), msg_id.len(), chat_jid_c, sender_jid_c) }
 }
 
 pub fn pair_phone(phone: &str) -> String {

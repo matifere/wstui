@@ -572,6 +572,25 @@ impl App<'_> {
         }
     }
 
+    pub fn mark_chat_as_read(&mut self, chat_jid: &wr::JID) {
+        if let Some(msgs) = self.chat_messages.get(chat_jid) {
+            let msgs_per_sender: HashMap<wr::JID, Vec<wr::MessageId>> = msgs
+                .iter()
+                .filter_map(|msg_id| self.messages.get(msg_id))
+                .filter(|msg| !msg.info.is_from_me && msg.info.read_by == 0)
+                .fold(HashMap::new(), |mut acc, msg| {
+                    acc.entry(msg.info.sender.clone())
+                        .or_insert_with(Vec::new)
+                        .push(msg.info.id.clone());
+                    acc
+                });
+
+            for (sender, msg_ids) in msgs_per_sender {
+                wr::mark_as_read(&msg_ids, chat_jid, &sender);
+            }
+        }
+    }
+
     fn suspend_input_reader(&self) {
         let (state_lock, state_changed) = &*self.input_reader_control;
         let mut state = state_lock.lock().unwrap();
