@@ -293,14 +293,20 @@ func GetSelfId(client *whatsmeow.Client) string {
 	return StrFromJid(*client.Store.ID)
 }
 
+func isStatusBroadcast(chat types.JID) bool {
+	return chat == types.StatusBroadcastJID ||
+		(chat.Server == types.BroadcastServer && chat.User == "status") ||
+		chat.String() == "status@broadcast"
+}
+
 // GetChatId returns the normalized chat id (conversation key): LID→PN, broadcast→per-sender, status as-is.
 func GetChatId(client *whatsmeow.Client, chatJid *types.JID, senderJid *types.JID) string {
 	if chatJid == nil {
 		LOG_WARN("chatJid is nil")
 		return ""
 	}
-	if chatJid.Server == types.BroadcastServer && chatJid.User == "status" {
-		return StrFromJid(*chatJid)
+	if isStatusBroadcast(*chatJid) {
+		return ""
 	}
 	if chatJid.Server == types.BroadcastServer && chatJid.User != "status" {
 		if senderJid != nil {
@@ -591,6 +597,11 @@ func ContentToWaE2EMessage(messageType C.uint8_t, messageContent unsafe.Pointer,
 }
 
 func HandleMessage(info types.MessageInfo, msg *waE2E.Message, isSync bool) {
+	// Ignore WhatsApp status / stories updates
+	if isStatusBroadcast(info.Chat) {
+		return
+	}
+
 	// Normalize chat and sender ids (LID→PN, broadcast→per-sender) so Rust sees canonical ids.
 	if normalizedChat := GetChatId(client, &info.Chat, &info.Sender); normalizedChat != "" {
 		if jid, err := types.ParseJID(normalizedChat); err == nil {
@@ -1363,9 +1374,15 @@ func AddEventHandlers() {
 			C.free(unsafe.Pointer(cCallTerm))
 
 		case *events.Message:
+			if isStatusBroadcast(evt.Info.Chat) {
+				return
+			}
 			HandleMessage(evt.Info, evt.Message, false)
 
 		case *events.Receipt:
+			if isStatusBroadcast(evt.MessageSource.Chat) {
+				return
+			}
 
 			receiptKind := -1
 			if evt.Type == types.ReceiptTypeRead || evt.Type == types.ReceiptTypeReadSelf {
@@ -1414,7 +1431,13 @@ func AddEventHandlers() {
 
 			conversations := evt.Data.GetConversations()
 			for _, conversation := range conversations {
+				if conversation.GetID() == "status@broadcast" {
+					continue
+				}
 				chatJid, _ := types.ParseJID(conversation.GetID())
+				if isStatusBroadcast(chatJid) {
+					continue
+				}
 				syncMessages := conversation.GetMessages()
 
 				for _, syncMessage := range syncMessages {

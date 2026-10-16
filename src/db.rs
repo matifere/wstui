@@ -50,6 +50,9 @@ impl DatabaseHandler {
                             .prepare("INSERT OR REPLACE INTO chats (jid) VALUES (?)")
                             .unwrap();
                         for chat in new_chats {
+                            if chat.jid.0.as_ref() == "status@broadcast" {
+                                continue;
+                            }
                             statement.execute(rusqlite::params![&*chat.jid.0]).unwrap();
                         }
                     }
@@ -76,6 +79,9 @@ impl DatabaseHandler {
                             .prepare("INSERT OR REPLACE INTO file_messages (id, chat_jid, sender_jid, timestamp, quote_id, is_from_me, read, kind, path, file_id, caption) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
                             .unwrap();
                         for msg in &messages {
+                            if msg.info.chat.0.as_ref() == "status@broadcast" {
+                                continue;
+                            }
                             match &msg.message {
                                 wr::MessageContent::Text(text) => {
                                     text_stmt
@@ -141,17 +147,26 @@ impl DatabaseHandler {
     }
 
     pub fn add_message(&self, message: &wr::Message) {
+        if message.info.chat.0.as_ref() == "status@broadcast" {
+            return;
+        }
         let mut queue = self.new_messages_queue.lock().unwrap();
         queue.push(message.clone());
     }
 
     pub fn add_chat(&self, chat: &Chat) {
+        if chat.jid.0.as_ref() == "status@broadcast" {
+            return;
+        }
         let mut queue = self.new_chats_queue.lock().unwrap();
         queue.push(chat.clone());
     }
 
     pub fn get_chats(&self) -> Vec<Chat> {
-        let mut query = self.db.prepare("SELECT jid FROM chats").unwrap();
+        let mut query = self
+            .db
+            .prepare("SELECT jid FROM chats WHERE jid != 'status@broadcast'")
+            .unwrap();
         query
             .query_map([], |row| {
                 let jid: String = row.get(0).unwrap();
@@ -170,7 +185,10 @@ impl DatabaseHandler {
         for kind in wr::MessageContent::iter() {
             let msgs = match kind {
                 wr::MessageContent::Text(_) => {
-                    let mut query = self.db.prepare("SELECT * FROM text_messages").unwrap();
+                    let mut query = self
+                        .db
+                        .prepare("SELECT * FROM text_messages WHERE chat_jid != 'status@broadcast'")
+                        .unwrap();
                     query
                         .query_map([], |row| {
                             let id: String = row.get(0).unwrap();
@@ -200,7 +218,10 @@ impl DatabaseHandler {
                         .collect::<Vec<Result<_, _>>>()
                 }
                 wr::MessageContent::File(_) => {
-                    let mut query = self.db.prepare("SELECT * FROM file_messages").unwrap();
+                    let mut query = self
+                        .db
+                        .prepare("SELECT * FROM file_messages WHERE chat_jid != 'status@broadcast'")
+                        .unwrap();
                     query
                         .query_map([], |row| {
                             let id: String = row.get(0).unwrap();
@@ -331,5 +352,21 @@ impl DatabaseHandler {
                 }
             }
         }
+    }
+
+    pub fn cleanup_status(&self, media_path: &Path) {
+        if let Ok(mut stmt) = self.db.prepare("SELECT path FROM file_messages WHERE chat_jid = 'status@broadcast'") {
+            if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
+                for path_str in rows.flatten() {
+                    let full_path = media_path.join(&path_str);
+                    if full_path.exists() {
+                        let _ = std::fs::remove_file(full_path);
+                    }
+                }
+            }
+        }
+        let _ = self.db.execute("DELETE FROM chats WHERE jid = 'status@broadcast'", []);
+        let _ = self.db.execute("DELETE FROM text_messages WHERE chat_jid = 'status@broadcast'", []);
+        let _ = self.db.execute("DELETE FROM file_messages WHERE chat_jid = 'status@broadcast'", []);
     }
 }

@@ -247,6 +247,7 @@ impl Default for App<'_> {
 impl App<'_> {
     pub fn run(&mut self, phone: Option<String>) {
         self.db_handler.init();
+        self.db_handler.cleanup_status(&self.media_path);
         self.load_data_from_db();
         self.sort_chats();
 
@@ -549,19 +550,23 @@ impl App<'_> {
                     message: msg,
                     is_sync,
                 }) => {
-                    if !is_sync {
-                        self.handle_notification(&msg);
+                    if msg.info.chat.0.as_ref() == "status@broadcast" {
+                        false
+                    } else {
+                        if !is_sync {
+                            self.handle_notification(&msg);
+                        }
+
+                        self.db_handler.add_message(&msg);
+                        self.add_message(msg);
+
+                        let chat_jid = self.get_selected_chat();
+
+                        self.sort_chats();
+
+                        self.select_chat(chat_jid);
+                        !is_sync
                     }
-
-                    self.db_handler.add_message(&msg);
-                    self.add_message(msg);
-
-                    let chat_jid = self.get_selected_chat();
-
-                    self.sort_chats();
-
-                    self.select_chat(chat_jid);
-                    !is_sync
                 }
                 Ok(AppInput::Terminal(event)) => {
                     self.on_terminal_event(event);
@@ -591,6 +596,9 @@ impl App<'_> {
     fn load_data_from_db(&mut self) {
         info!("Reading database");
         for chat in self.db_handler.get_chats() {
+            if chat.jid.0.as_ref() == "status@broadcast" {
+                continue;
+            }
             self.chats.insert(chat.jid.clone(), chat);
         }
         for (jid, name) in self.db_handler.get_contacts() {
@@ -747,7 +755,7 @@ impl App<'_> {
     }
 
     fn handle_notification(&self, message: &wr::Message) {
-        if message.info.is_from_me {
+        if message.info.is_from_me || message.info.chat.0.as_ref() == "status@broadcast" {
             return;
         }
 
@@ -891,6 +899,9 @@ impl App<'_> {
     }
 
     fn add_message(&mut self, message: wr::Message) {
+        if message.info.chat.0.as_ref() == "status@broadcast" {
+            return;
+        }
         let chat_jid = message.info.chat.clone();
         self.add_or_update_chat(
             Chat {
@@ -923,6 +934,9 @@ impl App<'_> {
     }
 
     fn add_or_update_chat<F: FnOnce(&mut Chat)>(&mut self, chat: Chat, callback: F) {
+        if chat.jid.0.as_ref() == "status@broadcast" {
+            return;
+        }
         if let Some(existing_chat) = self.chats.get_mut(&chat.jid) {
             callback(existing_chat);
             self.db_handler.add_chat(existing_chat);
@@ -940,7 +954,12 @@ impl App<'_> {
     }
 
     fn sort_chats(&mut self) {
-        let mut entries: Vec<_> = self.chats.values().cloned().collect();
+        let mut entries: Vec<_> = self
+            .chats
+            .values()
+            .filter(|c| c.jid.0.as_ref() != "status@broadcast")
+            .cloned()
+            .collect();
         entries.sort_by(|a, b| {
             let a_time = a.last_message_time.unwrap_or_default();
             let b_time = b.last_message_time.unwrap_or_default();
