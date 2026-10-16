@@ -9,6 +9,8 @@ require (
 	google.golang.org/protobuf v1.36.11
 )
 
+replace github.com/purpshell/meowcaller => ./meowcaller
+
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/coder/websocket v1.8.15 // indirect

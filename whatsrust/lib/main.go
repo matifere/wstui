@@ -155,6 +155,7 @@ import (
 	"github.com/polymorfa/hypermeow/types/events"
 	waLog "github.com/polymorfa/hypermeow/util/log"
 	"github.com/purpshell/meowcaller"
+	"github.com/rs/zerolog"
 )
 
 var client *whatsmeow.Client
@@ -361,7 +362,15 @@ func C_NewClient(dbPath *C.char) {
 	deviceStore, _ := container.GetFirstDevice(context.Background())
 	clientLog := &WrLogger{}
 	client = whatsmeow.NewClient(deviceStore, clientLog)
-	callerClient = meowcaller.NewClient(client)
+
+	voipLogFile, err := os.OpenFile("/tmp/wstui_voip.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	var zLog zerolog.Logger
+	if err == nil {
+		zLog = zerolog.New(voipLogFile).With().Timestamp().Logger()
+	} else {
+		zLog = zerolog.Nop()
+	}
+	callerClient = meowcaller.NewClient(client, meowcaller.WithLogger(zLog))
 	callerClient.OnIncomingCall(func(call *meowcaller.Call) {
 		LOG_INFO("meowcaller OnIncomingCall: %s from %s", call.ID(), call.Peer().String())
 		activeCallMu.Lock()
@@ -858,15 +867,22 @@ func C_AnswerCall(callID *C.char) C.bool {
 	// Launch ffplay for H.264 video stream
 	vCmd := exec.Command("ffplay",
 		"-f", "h264",
-		"-probesize", "32",
+		"-probesize", "65536",
+		"-analyzeduration", "100000",
 		"-fflags", "nobuffer",
 		"-flags", "low_delay",
 		"-framedrop",
 		"-window_title", fmt.Sprintf("WhatsApp Call - %s", call.Peer().String()),
 		"-i", "pipe:0",
 	)
+	vLog, _ := os.OpenFile("/tmp/wstui_ffplay.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if vLog != nil {
+		vCmd.Stderr = vLog
+		vCmd.Stdout = vLog
+	}
 	vIn, err := vCmd.StdinPipe()
 	if err == nil && vCmd.Start() == nil {
+		LOG_INFO("ffplay started with PID %d", vCmd.Process.Pid)
 		activeCallMu.Lock()
 		videoCmd = vCmd
 		videoStdin = vIn
@@ -874,6 +890,7 @@ func C_AnswerCall(callID *C.char) C.bool {
 
 		go func() {
 			_ = vCmd.Wait()
+			LOG_INFO("ffplay process exited")
 			activeCallMu.Lock()
 			if videoCmd == vCmd {
 				videoCmd = nil
@@ -882,7 +899,12 @@ func C_AnswerCall(callID *C.char) C.bool {
 			activeCallMu.Unlock()
 		}()
 
+		var frameCount uint64
 		call.ReceiveVideo(meowcaller.VideoSinkFunc(func(au []byte) {
+			frameCount++
+			if frameCount == 1 || frameCount%60 == 0 {
+				LOG_INFO("Writing video frame #%d (%d bytes) to ffplay", frameCount, len(au))
+			}
 			activeCallMu.Lock()
 			pipe := videoStdin
 			activeCallMu.Unlock()
@@ -903,9 +925,15 @@ func C_AnswerCall(callID *C.char) C.bool {
 	} else {
 		aCmd = exec.Command("ffplay", "-f", "s16le", "-ar", "16000", "-ac", "1", "-nodisp", "-autoexit", "-i", "pipe:0")
 	}
+	aLog, _ := os.OpenFile("/tmp/wstui_audio.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if aLog != nil {
+		aCmd.Stderr = aLog
+		aCmd.Stdout = aLog
+	}
 
 	aIn, aErr := aCmd.StdinPipe()
 	if aErr == nil && aCmd.Start() == nil {
+		LOG_INFO("Audio player started with PID %d", aCmd.Process.Pid)
 		activeCallMu.Lock()
 		audioCmd = aCmd
 		audioStdin = aIn
@@ -913,6 +941,7 @@ func C_AnswerCall(callID *C.char) C.bool {
 
 		go func() {
 			_ = aCmd.Wait()
+			LOG_INFO("Audio player process exited")
 			activeCallMu.Lock()
 			if audioCmd == aCmd {
 				audioCmd = nil
@@ -921,7 +950,12 @@ func C_AnswerCall(callID *C.char) C.bool {
 			activeCallMu.Unlock()
 		}()
 
+		var audioCount uint64
 		call.Receive(meowcaller.SinkFunc(func(pcm []float32) {
+			audioCount++
+			if audioCount == 1 || audioCount%100 == 0 {
+				LOG_DEBUG("Writing audio frame #%d (%d samples) to audio player", audioCount, len(pcm))
+			}
 			activeCallMu.Lock()
 			pipe := audioStdin
 			activeCallMu.Unlock()
@@ -949,7 +983,7 @@ func C_AnswerCall(callID *C.char) C.bool {
 		return C.bool(false)
 	}
 
-	LOG_INFO("Successfully answered call %s", call.ID())
+	LOG_INFO("call.Answer() succeeded for %s", call.ID())
 	return C.bool(true)
 }
 
