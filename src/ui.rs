@@ -112,6 +112,65 @@ fn render_logs(frame: &mut Frame, area: Rect) {
     frame.render_widget(log_widget, area);
 }
 
+const BADGE_COLORS: &[Color] = &[
+    Color::Rgb(52, 152, 219),  // River Blue
+    Color::Rgb(46, 204, 113),  // Emerald Green
+    Color::Rgb(155, 89, 182),  // Amethyst Purple
+    Color::Rgb(243, 156, 18),  // Amber / Warm Yellow
+    Color::Rgb(230, 126, 34),  // Carrot Orange
+    Color::Rgb(231, 76, 60),   // Coral Red
+    Color::Rgb(26, 188, 156),  // Turquoise Teal
+    Color::Rgb(253, 121, 168), // Rose Pink
+    Color::Rgb(108, 92, 231),  // Indigo Periwinkle
+    Color::Rgb(0, 206, 201),   // Vivid Cyan
+    Color::Rgb(225, 112, 85),  // Terracotta
+];
+
+pub fn get_contact_badge(chat: &wr::JID, raw_name: &str) -> (String, Color) {
+    let is_group = chat.0.ends_with("@g.us");
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    use std::hash::{Hash, Hasher};
+    chat.0.hash(&mut hasher);
+    let color_idx = (hasher.finish() as usize) % BADGE_COLORS.len();
+    let color = BADGE_COLORS[color_idx];
+
+    let clean = raw_name.trim().trim_start_matches('~').trim();
+    let clean = clean.trim_start_matches(|c: char| !c.is_alphanumeric() && c != '+').trim();
+
+    let initials = if clean.is_empty() {
+        if is_group {
+            "👥".to_string()
+        } else {
+            "👤".to_string()
+        }
+    } else if clean.starts_with('+') {
+        let digits: String = clean.chars().filter(|c| c.is_ascii_digit()).collect();
+        if digits.len() >= 2 {
+            format!("#{}", &digits[digits.len() - 2..])
+        } else {
+            "+#".to_string()
+        }
+    } else {
+        let words: Vec<&str> = clean.split_whitespace().collect();
+        if words.len() >= 2 {
+            let first = words[0].chars().find(|c| c.is_alphanumeric()).unwrap_or(' ');
+            let second = words[1].chars().find(|c| c.is_alphanumeric()).unwrap_or(' ');
+            format!("{}{}", first.to_uppercase(), second.to_uppercase())
+        } else {
+            let mut chars = clean.chars().filter(|c| c.is_alphanumeric());
+            let first = chars.next().unwrap_or('?').to_uppercase().to_string();
+            let second = chars
+                .next()
+                .map(|c| c.to_uppercase().to_string())
+                .unwrap_or_else(|| " ".to_string());
+            format!("{}{}", first, second)
+        }
+    };
+
+    (initials, color)
+}
+
 fn render_contacts(frame: &mut Frame, app: &mut App, area: Rect) {
     let chats = if app.contact_search.input.is_empty() {
         &app.sorted_chats
@@ -121,12 +180,17 @@ fn render_contacts(frame: &mut Frame, app: &mut App, area: Rect) {
     let items = chats
         .iter()
         .map(|chat| {
-            let is_group = chat.0.ends_with("@g.us");
-            let icon = if is_group { "👥 " } else { "👤 " };
-            let icon_color = if is_group { Color::LightCyan } else { Color::Green };
             let name = app.contact_name(chat);
+            let (badge, badge_color) = get_contact_badge(chat, &name);
             Line::from(vec![
-                Span::styled(icon, Style::default().fg(icon_color)),
+                Span::styled(
+                    format!(" {badge} "),
+                    Style::default()
+                        .fg(Color::Rgb(20, 20, 25))
+                        .bg(badge_color)
+                        .bold(),
+                ),
+                Span::raw(" "),
                 Span::raw(name.to_string()),
             ])
         })

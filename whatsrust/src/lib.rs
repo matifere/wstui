@@ -1,6 +1,6 @@
 use std::{
     ffi::{CStr, CString, c_char, c_int, c_void},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
@@ -286,6 +286,8 @@ unsafe extern "C" {
     fn C_Disconnect();
     fn C_PairPhone(phone: *const c_char) -> *const c_char;
     fn C_DownloadFile(file_id: *const c_char, base_path: *const c_char) -> u8;
+    fn C_GetProfilePicture(jid: *const c_char, avatar_dir: *const c_char) -> *const c_char;
+    fn C_FreeString(str: *const c_char);
     fn C_RejectCall(call_from: *const c_char, call_id: *const c_char) -> bool;
     fn C_AnswerCall(call_id: *const c_char) -> bool;
     fn C_HangupCall() -> bool;
@@ -308,6 +310,20 @@ pub fn download_file(file_id: &FileId, base_path: &Path) -> Result<(), DownloadF
         Ok(())
     } else {
         Err(DownloadFailed)
+    }
+}
+
+pub fn get_profile_picture(jid: &JID, avatar_dir: &Path) -> Option<PathBuf> {
+    let c_jid = CString::new(jid.as_ref()).ok()?;
+    let c_dir = CString::new(avatar_dir.to_str()?).ok()?;
+    let ptr = unsafe { C_GetProfilePicture(c_jid.as_ptr(), c_dir.as_ptr()) };
+    if ptr.is_null() {
+        None
+    } else {
+        let c_str = unsafe { std::ffi::CStr::from_ptr(ptr) };
+        let path_str = c_str.to_str().ok()?.to_string();
+        unsafe { C_FreeString(ptr) };
+        Some(PathBuf::from(path_str))
     }
 }
 

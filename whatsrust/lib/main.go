@@ -135,6 +135,7 @@ import (
 	"io"
 	"math"
 	"mime"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -902,6 +903,89 @@ func C_DownloadFile(fileId *C.char, basePath *C.char) C.uint8_t {
 	goBasePath := C.GoString(basePath)
 	status := DownloadFromFileId(client, goFileId, goBasePath)
 	return C.uint8_t(status)
+}
+
+//export C_FreeString
+func C_FreeString(str *C.char) {
+	if str != nil {
+		C.free(unsafe.Pointer(str))
+	}
+}
+
+//export C_GetProfilePicture
+func C_GetProfilePicture(cJid *C.char, avatarDir *C.char) *C.char {
+	if client == nil || client.Store == nil || client.Store.ID == nil {
+		return nil
+	}
+
+	jidStr := C.GoString(cJid)
+	dirStr := C.GoString(avatarDir)
+
+	jid, err := types.ParseJID(jidStr)
+	if err != nil {
+		LOG_ERROR("GetProfilePicture invalid JID: %s: %v", jidStr, err)
+		return nil
+	}
+
+	// Normalize LID to PN if available
+	if jid.Server == types.HiddenUserServer {
+		ctx := context.Background()
+		if pJid, _ := client.Store.LIDs.GetPNForLID(ctx, jid); !pJid.IsEmpty() {
+			jid = pJid
+		}
+	}
+
+	safeName := strings.ReplaceAll(jid.String(), ":", "_")
+	safeName = strings.ReplaceAll(safeName, "/", "_")
+	safeName = strings.ReplaceAll(safeName, "@", "_")
+	filePath := filepath.Join(dirStr, safeName+".jpg")
+
+	// If cached file exists and is not empty, return path immediately
+	if fi, err := os.Stat(filePath); err == nil && fi.Size() > 0 {
+		return C.CString(filePath)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	// Try preview first, fallback to full image
+	picInfo, err := client.GetProfilePictureInfo(ctx, jid, &whatsmeow.GetProfilePictureParams{Preview: true})
+	if err != nil || picInfo == nil || picInfo.URL == "" {
+		picInfo, err = client.GetProfilePictureInfo(ctx, jid, &whatsmeow.GetProfilePictureParams{Preview: false})
+	}
+	if err != nil || picInfo == nil || picInfo.URL == "" {
+		return nil
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, picInfo.URL, nil)
+	if err != nil {
+		return nil
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		return nil
+	}
+	defer resp.Body.Close()
+
+	_ = os.MkdirAll(dirStr, 0755)
+	tmpPath := filePath + ".tmp"
+	outFile, err := os.Create(tmpPath)
+	if err != nil {
+		return nil
+	}
+	_, err = io.Copy(outFile, resp.Body)
+	_ = outFile.Close()
+	if err != nil {
+		_ = os.Remove(tmpPath)
+		return nil
+	}
+	_ = os.Rename(tmpPath, filePath)
+
+	LOG_INFO("Downloaded profile picture for %s -> %s", jidStr, filePath)
+	return C.CString(filePath)
 }
 
 //export C_AnswerCall

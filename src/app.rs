@@ -2,7 +2,7 @@ use std::io::stdout;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::{collections::HashMap, sync::Arc, sync::Condvar, sync::Mutex};
+use std::{collections::{HashMap, HashSet}, sync::Arc, sync::Condvar, sync::Mutex};
 use std::{fs, thread};
 
 pub mod audio;
@@ -118,6 +118,9 @@ pub struct App<'a> {
     pub message_list_state: MessageListState,
     pub metadata: HashMap<wr::MessageId, Metadata>,
     pub image_cache: HashMap<Arc<str>, StatefulProtocol>,
+    pub avatar_path: PathBuf,
+    pub avatar_cache: HashMap<wr::JID, StatefulProtocol>,
+    pub avatar_requested: HashSet<wr::JID>,
     pub default_protocol_type: ProtocolType,
     pub picker: Arc<Mutex<Picker>>,
 
@@ -172,6 +175,8 @@ impl Default for App<'_> {
         let project_dirs = ProjectDirs::from("com", "nullptr", "wstui").unwrap();
         let data_dir = project_dirs.data_dir();
         fs::create_dir_all(data_dir).unwrap();
+        let avatar_path = data_dir.join("media").join("avatars");
+        fs::create_dir_all(&avatar_path).unwrap();
 
         let (tx, rx) = mpsc::channel::<AppInput>();
 
@@ -210,6 +215,9 @@ impl Default for App<'_> {
             metadata: HashMap::new(),
             history_sync_percent: None,
             image_cache: HashMap::new(),
+            avatar_path,
+            avatar_cache: HashMap::new(),
+            avatar_requested: HashSet::new(),
             default_protocol_type,
             quoting_message: None,
             attached_file: None,
@@ -399,6 +407,10 @@ impl App<'_> {
 
                         trace!("Set file preview for message: {:?}", message_id);
 
+                        true
+                    }
+                    AppEvent::SetAvatar(jid, path) => {
+                        self.load_avatar_file(jid, path);
                         true
                     }
                     AppEvent::LoadFilePreview(message_id) => {
@@ -1101,6 +1113,54 @@ impl App<'_> {
                 .spawn();
         } else {
             let _ = open::that(url);
+        }
+    }
+
+    pub fn request_avatar(&mut self, jid: wr::JID) {
+        if self.avatar_cache.contains_key(&jid) || self.avatar_requested.contains(&jid) {
+            return;
+        }
+
+        self.avatar_requested.insert(jid.clone());
+
+        let safe_name = jid
+            .0
+            .replace(':', "_")
+            .replace('/', "_")
+            .replace('@', "_");
+        let file_path = self.avatar_path.join(format!("{}.jpg", safe_name));
+
+        if file_path.exists() {
+            self.load_avatar_file(jid, file_path);
+            return;
+        }
+
+        let tx = self.tx.clone();
+        let avatar_dir = self.avatar_path.clone();
+        thread::spawn(move || {
+            if let Some(path) = wr::get_profile_picture(&jid, &avatar_dir) {
+                let _ = tx.send(AppInput::App(AppEvent::SetAvatar(jid, path)));
+            }
+        });
+    }
+
+    pub fn load_avatar_file(&mut self, jid: wr::JID, file_path: PathBuf) {
+        if let Ok(dyn_img) = image::ImageReader::open(&file_path)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+            .and_then(|r| r.decode().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)))
+        {
+            let picker = self.picker.lock().unwrap();
+            let mut img = picker.new_resize_protocol(dyn_img);
+            img.resize_encode(
+                &Resize::Scale(None),
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 8,
+                    height: 3,
+                },
+            );
+            self.avatar_cache.insert(jid, img);
         }
     }
 }

@@ -16,6 +16,7 @@ pub enum AppEvent {
     LoadFilePreview(wr::MessageId),
     SetFilePreview(wr::MessageId, Arc<str>, StatefulProtocol),
     SetFileState(wr::MessageId, FileMeta),
+    SetAvatar(wr::JID, std::path::PathBuf),
     EditWithExternalEditor,
 }
 
@@ -58,6 +59,11 @@ impl fmt::Debug for AppEvent {
                 .debug_tuple("SetFileState")
                 .field(message_id)
                 .field(state)
+                .finish(),
+            AppEvent::SetAvatar(jid, path) => f
+                .debug_tuple("SetAvatar")
+                .field(jid)
+                .field(path)
                 .finish(),
             AppEvent::EditWithExternalEditor => f.debug_tuple("EditWithExternalEditor").finish(),
         }

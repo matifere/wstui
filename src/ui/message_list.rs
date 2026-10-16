@@ -13,12 +13,13 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph, StatefulWidget, Widget},
 };
-use ratatui_image::StatefulImage;
+use ratatui_image::{Resize, StatefulImage};
 use textwrap;
 use whatsrust::{self as wr, FileKind};
 
 use crate::app::events::{AppEvent, AppInput};
 use crate::app::{FileMeta, App, Metadata, SelectedWidget};
+use crate::ui::get_contact_badge;
 
 pub const IMAGE_HEIGHT: usize = 12;
 pub const IMAGE_WIDTH: usize = IMAGE_HEIGHT * 3;
@@ -295,6 +296,7 @@ fn render_message(
 
 pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<()> {
     let chat_jid = app.get_selected_chat()?;
+    app.request_avatar(chat_jid.clone());
 
     let is_focused = matches!(app.selected_widget, SelectedWidget::MessageList);
     let border_color = if is_focused {
@@ -307,16 +309,6 @@ pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<(
     let icon = if is_group { "👥 Grupo: " } else { "💬 Chat con: " };
     let name = app.contact_name(&chat_jid);
 
-    let title_line = Line::from(vec![
-        Span::raw(" "),
-        Span::styled(icon, Style::default().fg(Color::Cyan).bold()),
-        Span::styled(
-            name.to_string(),
-            Style::default().fg(Color::Rgb(255, 215, 0)).bold().underlined(),
-        ),
-        Span::raw(" "),
-    ]);
-
     let bottom_help = Line::from(vec![
         Span::styled(
             " [j/k: mensajes | r: responder | s: fav sticker ⭐ | Ctrl+S: stickers | Ctrl+J: escribir] ",
@@ -324,25 +316,148 @@ pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<(
         ),
     ]);
 
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .title(title_line)
-        .title_bottom(bottom_help)
-        .border_style(Style::default().fg(border_color));
-    frame.render_widget(&block, area);
+    let (header_area, list_outer_area) = if area.height >= 14 {
+        let chunks = Layout::vertical([
+            Constraint::Length(5),
+            Constraint::Min(0),
+        ])
+        .split(area);
+        (Some(chunks[0]), chunks[1])
+    } else {
+        (None, area)
+    };
 
-    let list_area = block.inner(area);
+    if let Some(h_area) = header_area {
+        let header_block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(border_color));
+        frame.render_widget(&header_block, h_area);
+
+        let inner = header_block.inner(h_area);
+        if inner.height >= 3 && inner.width >= 20 {
+            let cols = Layout::horizontal([
+                Constraint::Length(8),
+                Constraint::Length(2),
+                Constraint::Min(0),
+            ])
+            .split(inner);
+
+            let avatar_area = cols[0];
+            let info_area = cols[2];
+
+            let (badge, badge_color) = get_contact_badge(&chat_jid, &name);
+            let badge_line = if badge.len() == 2 {
+                format!("   {badge}   ")
+            } else if badge.len() == 1 {
+                format!("    {badge}   ")
+            } else {
+                format!(" {:^6} ", badge)
+            };
+            let badge_widget = Paragraph::new(vec![
+                Line::from(Span::styled("        ", Style::default().bg(badge_color))),
+                Line::from(Span::styled(
+                    badge_line,
+                    Style::default()
+                        .fg(Color::Rgb(20, 20, 25))
+                        .bg(badge_color)
+                        .bold(),
+                )),
+                Line::from(Span::styled("        ", Style::default().bg(badge_color))),
+            ]);
+            frame.render_widget(badge_widget, avatar_area);
+
+            if let Some(image) = app.avatar_cache.get_mut(&chat_jid) {
+                frame.render_stateful_widget(
+                    StatefulImage::default().resize(Resize::Scale(None)),
+                    avatar_area,
+                    image,
+                );
+            }
+
+            let line1 = Line::from(vec![
+                Span::styled(if is_group { "👥 Grupo: " } else { "💬 " }, Style::default().fg(Color::Cyan).bold()),
+                Span::styled(
+                    name.to_string(),
+                    Style::default().fg(Color::Rgb(255, 215, 0)).bold(),
+                ),
+            ]);
+
+            let phone_or_id = if is_group {
+                let id = chat_jid.0.split('@').next().unwrap_or(&chat_jid.0);
+                format!("👥 ID: {}", id)
+            } else {
+                let raw = chat_jid.0.split('@').next().unwrap_or(&chat_jid.0);
+                let raw_phone = raw.split(':').next().unwrap_or(raw);
+                let clean_phone = raw_phone.trim_start_matches('+');
+                if clean_phone.chars().all(|c| c.is_ascii_digit()) && !clean_phone.is_empty() {
+                    format!("📱 +{}", clean_phone)
+                } else {
+                    format!("📱 {}", raw_phone)
+                }
+            };
+
+            let line2 = Line::from(vec![
+                Span::styled(phone_or_id, Style::default().fg(Color::Gray)),
+            ]);
+
+            let items_count = app.chat_messages.get(&chat_jid).map(|m| m.len()).unwrap_or(0);
+            let has_pic = if app.avatar_cache.contains_key(&chat_jid) {
+                " • 🖼 Foto de perfil"
+            } else {
+                ""
+            };
+            let line3 = Line::from(vec![
+                Span::styled(
+                    format!("💬 {} mensajes{}", items_count, has_pic),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]);
+
+            let info_widget = Paragraph::new(vec![line1, line2, line3]);
+            frame.render_widget(info_widget, info_area);
+        }
+    }
+
+    let messages_block = if header_area.is_some() {
+        Block::bordered()
+            .border_type(BorderType::Rounded)
+            .title(Line::from(vec![
+                Span::styled(" Mensajes ", Style::default().fg(Color::Cyan).bold()),
+            ]))
+            .title_bottom(bottom_help)
+            .border_style(Style::default().fg(border_color))
+    } else {
+        let title_line = Line::from(vec![
+            Span::raw(" "),
+            Span::styled(icon, Style::default().fg(Color::Cyan).bold()),
+            Span::styled(
+                name.to_string(),
+                Style::default().fg(Color::Rgb(255, 215, 0)).bold().underlined(),
+            ),
+            Span::raw(" "),
+        ]);
+        Block::bordered()
+            .border_type(BorderType::Rounded)
+            .title(title_line)
+            .title_bottom(bottom_help)
+            .border_style(Style::default().fg(border_color))
+    };
+
+    frame.render_widget(&messages_block, list_outer_area);
+
+    let list_area = messages_block.inner(list_outer_area);
     if list_area.is_empty() {
         return Some(());
     }
 
-    let items: Vec<_> = app
-        .chat_messages
-        .get(&chat_jid)?
-        .iter()
-        .rev()
-        .filter_map(|msg_id| app.messages.get(msg_id).cloned())
-        .collect();
+    let items: Vec<_> = match app.chat_messages.get(&chat_jid) {
+        Some(msg_ids) => msg_ids
+            .iter()
+            .rev()
+            .filter_map(|msg_id| app.messages.get(msg_id).cloned())
+            .collect(),
+        None => Vec::new(),
+    };
 
     if items.is_empty() {
         app.message_list_state.select(None);
