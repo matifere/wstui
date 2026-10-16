@@ -398,8 +398,8 @@ fn render_sticker_picker(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn render_incoming_call(frame: &mut Frame, app: &App, call: &crate::app::IncomingCall, area: Rect) {
-    let popup_width = 68.min(area.width.saturating_sub(4));
-    let popup_height = 10.min(area.height.saturating_sub(2));
+    let popup_width = 72.min(area.width.saturating_sub(4));
+    let popup_height = 12.min(area.height.saturating_sub(2));
     let x = (area.width.saturating_sub(popup_width)) / 2;
     let y = (area.height.saturating_sub(popup_height)) / 2;
     let popup_area = Rect::new(x, y, popup_width, popup_height);
@@ -434,12 +434,19 @@ fn render_incoming_call(frame: &mut Frame, app: &App, call: &crate::app::Incomin
             Span::styled(" Tipo: ", Style::default().fg(Color::DarkGray)),
             Span::styled(type_str, Style::default().fg(Color::Cyan)),
         ]),
+        Line::from(vec![
+            Span::styled(" Mic:  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(app.current_microphone_name(), Style::default().fg(Color::LightYellow).bold()),
+            Span::styled(" [m para cambiar]", Style::default().fg(Color::DarkGray)),
+        ]),
         Line::from(""),
         Line::from(vec![
             Span::styled(" [a / Enter] ", Style::default().fg(Color::Green).bold()),
-            Span::styled("Atender nativo (ffplay)  ", Style::default().fg(Color::White)),
+            Span::styled("Atender nativo  ", Style::default().fg(Color::White)),
             Span::styled("[b] ", Style::default().fg(Color::Cyan).bold()),
-            Span::styled("Navegador", Style::default().fg(Color::White)),
+            Span::styled("Navegador  ", Style::default().fg(Color::White)),
+            Span::styled("[m] ", Style::default().fg(Color::Yellow).bold()),
+            Span::styled("Mic", Style::default().fg(Color::White)),
         ]),
         Line::from(vec![
             Span::styled(" [r / Esc]   ", Style::default().fg(Color::Red).bold()),
@@ -454,8 +461,10 @@ fn render_active_call_indicator(frame: &mut Frame, app: &App, call: &crate::app:
     let caller_name = app.contact_name(&call.caller);
     let type_icon = if call.is_video { "📹" } else { "📞" };
     let rot_hint = if call.is_video { " [Ctrl+R: Rotar]" } else { "" };
-    let text = format!(" {} En llamada: {}{}[Ctrl+H: Cortar] ", type_icon, caller_name, rot_hint);
-    let width = (text.len() as u16 + 2).min(area.width.saturating_sub(4));
+    let mic_name = app.current_microphone_short();
+    let mic_hint = format!(" [Ctrl+M: {}]", mic_name);
+    let text = format!(" {} En llamada: {}{}{}[Ctrl+H: Cortar] ", type_icon, caller_name, rot_hint, mic_hint);
+    let width = (text.chars().count() as u16 + 2).min(area.width.saturating_sub(4));
     let pill_area = Rect::new(area.width.saturating_sub(width + 2), 0, width, 3);
 
     frame.render_widget(Clear, pill_area);
@@ -474,6 +483,7 @@ fn render_active_call_indicator(frame: &mut Frame, app: &App, call: &crate::app:
     if call.is_video {
         spans.push(Span::styled(" [Ctrl+R: Rotar]", Style::default().fg(Color::Yellow).bold()));
     }
+    spans.push(Span::styled(mic_hint, Style::default().fg(Color::Cyan).bold()));
     spans.push(Span::styled(" [Ctrl+H: Cortar]", Style::default().fg(Color::LightRed).bold()));
 
     let content = Paragraph::new(Line::from(spans));

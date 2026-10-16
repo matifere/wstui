@@ -32,6 +32,10 @@ impl App<'_> {
                 self.reject_incoming_call();
                 return;
             }
+            if self.kh.kp(&[Key::c('m')]) || self.kh.kp(&[Key::c('M')]) {
+                self.cycle_microphone();
+                return;
+            }
             return;
         }
 
@@ -42,6 +46,10 @@ impl App<'_> {
             }
             if self.kh.kp(&[Key::ctrl('r')]) {
                 self.rotate_camera();
+                return;
+            }
+            if self.kh.kp(&[Key::ctrl('m')]) {
+                self.cycle_microphone();
                 return;
             }
         }

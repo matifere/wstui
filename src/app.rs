@@ -5,11 +5,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{collections::HashMap, sync::Arc, sync::Condvar, sync::Mutex};
 use std::{fs, thread};
 
+pub mod audio;
 pub mod events;
 pub mod inputs;
 pub mod vim_input;
 
 pub use crate::app;
+use crate::app::audio::AudioDevice;
 use crate::app::events::{AppEvent, AppInput};
 use crate::db;
 use crate::key_handler::KeybindHandler;
@@ -140,6 +142,9 @@ pub struct App<'a> {
     pub incoming_call: Option<IncomingCall>,
     pub active_call: Option<IncomingCall>,
 
+    pub audio_devices: Vec<AudioDevice>,
+    pub selected_audio_device: usize,
+
     pub should_quit: bool,
 
     pub tx: mpsc::Sender<AppInput>,
@@ -169,6 +174,22 @@ impl Default for App<'_> {
         fs::create_dir_all(data_dir).unwrap();
 
         let (tx, rx) = mpsc::channel::<AppInput>();
+
+        let (audio_devices, mut selected_audio_device) = AudioDevice::discover();
+        if let Ok(env_mic) = std::env::var("WSTUI_MIC") {
+            let lower_env = env_mic.to_lowercase();
+            if let Some(pos) = audio_devices.iter().position(|d| {
+                d.display_name.to_lowercase().contains(&lower_env)
+                    || d.short_name.to_lowercase().contains(&lower_env)
+                    || d.port.as_ref().map(|p| p.to_lowercase().contains(&lower_env)).unwrap_or(false)
+                    || d.source.to_lowercase().contains(&lower_env)
+            }) {
+                selected_audio_device = pos;
+                if let Some(dev) = audio_devices.get(pos) {
+                    dev.apply(false);
+                }
+            }
+        }
 
         Self {
             db_handler: DatabaseHandler::new(&data_dir.join("whatsapp.db")),
@@ -206,6 +227,9 @@ impl Default for App<'_> {
 
             incoming_call: None,
             active_call: None,
+
+            audio_devices,
+            selected_audio_device,
 
             show_logs: false,
             vim: Vim::new(vim::Mode::Insert),
@@ -953,12 +977,61 @@ impl App<'_> {
     pub fn accept_incoming_call(&mut self) {
         if let Some(call) = self.incoming_call.take() {
             log::info!("Contestando llamada nativamente (ffplay/audio): {}", call.call_id);
+            if let Some(dev) = self.audio_devices.get(self.selected_audio_device) {
+                dev.apply(false);
+            }
             let ok = wr::answer_call(&call.call_id);
             if ok {
                 self.active_call = Some(call);
             } else {
                 log::error!("Error al contestar llamada nativamente");
             }
+        }
+    }
+
+    pub fn current_microphone_name(&self) -> &str {
+        self.audio_devices
+            .get(self.selected_audio_device)
+            .map(|d| d.display_name.as_str())
+            .unwrap_or("Predeterminado")
+    }
+
+    pub fn current_microphone_short(&self) -> &str {
+        self.audio_devices
+            .get(self.selected_audio_device)
+            .map(|d| d.short_name.as_str())
+            .unwrap_or("Mic")
+    }
+
+    pub fn refresh_audio_devices(&mut self) {
+        let (devices, active_idx) = AudioDevice::discover();
+        if !devices.is_empty() {
+            let prev_selected = self.audio_devices.get(self.selected_audio_device).cloned();
+            self.audio_devices = devices;
+            if let Some(prev) = prev_selected {
+                if let Some(pos) = self
+                    .audio_devices
+                    .iter()
+                    .position(|d| d.source == prev.source && d.port == prev.port)
+                {
+                    self.selected_audio_device = pos;
+                    return;
+                }
+            }
+            self.selected_audio_device = active_idx;
+        }
+    }
+
+    pub fn cycle_microphone(&mut self) {
+        self.refresh_audio_devices();
+        if self.audio_devices.is_empty() {
+            return;
+        }
+        self.selected_audio_device = (self.selected_audio_device + 1) % self.audio_devices.len();
+        let is_call_active = self.active_call.is_some();
+        if let Some(dev) = self.audio_devices.get(self.selected_audio_device) {
+            dev.apply(is_call_active);
+            log::info!("Micrófono cambiado a: {}", dev.display_name);
         }
     }
 
