@@ -30,6 +30,13 @@ This fork introduces visual improvements, Neovim ergonomics, native sticker send
 - **Bypass Redundant Downloads:** If a sticker was already received or sent anywhere, wstui detects the local file and avoids re-downloading it.
 - **Clean Sticker List:** The sticker picker automatically filters out duplicates so your gallery stays clean and organized.
 
+### 📞 Video & Voice Call Companion
+- **Incoming Call Alerts & Actions:** Real-time interception of WhatsApp `CallOffer` events. wstui displays a desktop notification and a modal popup showing the caller's name and call type (voice/video):
+  - **`a`** or **`Enter`**: Open your preferred browser at `web.whatsapp.com` to accept the call.
+  - **`r`** or **`Esc`**: Reject and hang up the call directly from the terminal via WhatsApp protocol.
+- **One-Key Outgoing Calls (`v` / `Space v`):** Select any contact and press `v` (or `Space v` in normal mode) to immediately launch your system's default browser (e.g. Zen Browser, Firefox, Chrome) focused on that chat, ready to call.
+- **Configurable Browser:** Automatically defaults to your desktop environment's default web browser. Can also be overridden with `WSTUI_BROWSER` (e.g. `export WSTUI_BROWSER="zen --new-window %s"`).
+
 ---
 
 ## 📋 Requirements
@@ -83,6 +90,14 @@ On first run, the client creates `whatsmeow_store.db` (session) and `media/` for
 | Toggle logs | `Ctrl+Shift+L` |
 | Cycle image protocol | `Ctrl+P` |
 | **Open Sticker Gallery** | **`Ctrl+S`** or **`Space s`** |
+| **Start Call in Browser** | **`v`** or **`Space v`** |
+
+### 📞 Incoming Call Modal
+
+| Action | Shortcut |
+|---|---|
+| **Accept in browser** | **`a`** or **`Enter`** |
+| **Reject call from terminal** | **`r`** or **`Esc`** |
 
 ### 🎭 Sticker Picker Modal
 

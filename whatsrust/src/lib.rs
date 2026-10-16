@@ -25,6 +25,12 @@ impl From<String> for JID {
     }
 }
 
+impl AsRef<str> for JID {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
 impl From<&CJID> for JID {
     fn from(cjid: &CJID) -> Self {
         JID(unsafe { CStr::from_ptr(*cjid) }.to_string_lossy().into())
@@ -104,6 +110,20 @@ struct CReceipt {
     count: u32,
 }
 
+#[repr(C)]
+struct CCallOffer {
+    call_id: *const c_char,
+    caller: CJID,
+    is_video: bool,
+    timestamp: i64,
+}
+
+#[repr(C)]
+struct CCallTerminate {
+    call_id: *const c_char,
+    reason: *const c_char,
+}
+
 #[derive(Clone, Debug)]
 #[repr(C)]
 struct CEvent {
@@ -148,6 +168,8 @@ enum EventType {
     SyncProgress = 0,
     AppStateSyncComplete = 1,
     Receipt = 2,
+    CallOffer = 3,
+    CallTerminate = 4,
 }
 
 #[derive(Clone, Debug)]
@@ -158,6 +180,16 @@ pub enum Event {
         kind: u8,
         chat: JID,
         message_ids: Vec<MessageId>,
+    },
+    CallOffer {
+        call_id: String,
+        caller: JID,
+        is_video: bool,
+        timestamp: i64,
+    },
+    CallTerminate {
+        call_id: String,
+        reason: String,
     },
 }
 
@@ -254,6 +286,7 @@ unsafe extern "C" {
     fn C_Disconnect();
     fn C_PairPhone(phone: *const c_char) -> *const c_char;
     fn C_DownloadFile(file_id: *const c_char, base_path: *const c_char) -> u8;
+    fn C_RejectCall(call_from: *const c_char, call_id: *const c_char) -> bool;
 
     fn C_MarkAsRead(msg_id: *const *const c_char, num_msg: usize, chat_jid: CJID, sender_jid: CJID);
 
@@ -273,6 +306,12 @@ pub fn download_file(file_id: &FileId, base_path: &Path) -> Result<(), DownloadF
     } else {
         Err(DownloadFailed)
     }
+}
+
+pub fn reject_call(caller: &JID, call_id: &str) -> bool {
+    let c_caller = CString::new(caller.as_ref()).unwrap();
+    let c_call_id = CString::new(call_id).unwrap();
+    unsafe { C_RejectCall(c_caller.as_ptr(), c_call_id.as_ptr()) }
 }
 
 pub fn mark_as_read(msg_id: &[MessageId], chat_jid: &JID, sender_jid: &JID) {
@@ -331,6 +370,29 @@ impl CallbackTranslator<*const CEvent> for Event {
                     chat,
                     message_ids,
                 }
+            }
+            EventType::CallOffer => {
+                let offer = unsafe { &(*(event.data as *const CCallOffer)) };
+                let call_id = unsafe { CStr::from_ptr(offer.call_id) }
+                    .to_string_lossy()
+                    .into_owned();
+                let caller: JID = (&offer.caller).into();
+                Event::CallOffer {
+                    call_id,
+                    caller,
+                    is_video: offer.is_video,
+                    timestamp: offer.timestamp,
+                }
+            }
+            EventType::CallTerminate => {
+                let term = unsafe { &(*(event.data as *const CCallTerminate)) };
+                let call_id = unsafe { CStr::from_ptr(term.call_id) }
+                    .to_string_lossy()
+                    .into_owned();
+                let reason = unsafe { CStr::from_ptr(term.reason) }
+                    .to_string_lossy()
+                    .into_owned();
+                Event::CallTerminate { call_id, reason }
             }
         }
     }

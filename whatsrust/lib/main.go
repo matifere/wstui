@@ -68,6 +68,18 @@ typedef struct {
 } ReceiptEvent;
 
 typedef struct {
+	char* callID;
+	JID caller;
+	bool isVideo;
+	int64_t timestamp;
+} CallOfferEvent;
+
+typedef struct {
+	char* callID;
+	char* reason;
+} CallTerminateEvent;
+
+typedef struct {
 	uint8_t kind;
 	void* data;
 } Event;
@@ -366,6 +378,8 @@ const (
 	EventTypeSyncProgress = iota
 	EventTypeAppStateSyncComplete
 	EventTypeReceipt
+	EventTypeCallOffer
+	EventTypeCallTerminate
 )
 
 const (
@@ -772,6 +786,24 @@ func C_DownloadFile(fileId *C.char, basePath *C.char) C.uint8_t {
 	return C.uint8_t(status)
 }
 
+//export C_RejectCall
+func C_RejectCall(callFrom *C.char, callID *C.char) C.bool {
+	if client == nil {
+		return C.bool(false)
+	}
+	fromJid, err := types.ParseJID(C.GoString(callFrom))
+	if err != nil {
+		LOG_ERROR("RejectCall invalid JID: %v", err)
+		return C.bool(false)
+	}
+	err = client.RejectCall(context.Background(), fromJid, C.GoString(callID))
+	if err != nil {
+		LOG_ERROR("RejectCall error: %v", err)
+		return C.bool(false)
+	}
+	return C.bool(true)
+}
+
 func AddEventHandlers() {
 	client.AddEventHandler(func(rawEvt any) {
 		switch evt := rawEvt.(type) {
@@ -789,6 +821,49 @@ func AddEventHandlers() {
 				}
 				C.callEventCallback(eventHandler, &cevent)
 			}
+
+		case *events.CallOffer:
+			callID := C.CString(evt.CallID)
+			defer C.free(unsafe.Pointer(callID))
+			callerJID := jidToC(evt.CallCreator)
+			defer C.free(unsafe.Pointer(callerJID))
+
+			isVideo := false
+			if evt.Data != nil {
+				if evt.Data.GetChildByTag("video").Tag == "video" {
+					isVideo = true
+				}
+			}
+
+			cCallOffer := (*C.CallOfferEvent)(C.malloc(C.sizeof_CallOfferEvent))
+			cCallOffer.callID = callID
+			cCallOffer.caller = callerJID
+			cCallOffer.isVideo = C.bool(isVideo)
+			cCallOffer.timestamp = C.int64_t(evt.Timestamp.Unix())
+
+			cevent := C.Event{
+				kind: C.uint8_t(EventTypeCallOffer),
+				data: unsafe.Pointer(cCallOffer),
+			}
+			C.callEventCallback(eventHandler, &cevent)
+			C.free(unsafe.Pointer(cCallOffer))
+
+		case *events.CallTerminate:
+			callID := C.CString(evt.CallID)
+			defer C.free(unsafe.Pointer(callID))
+			reason := C.CString(evt.Reason)
+			defer C.free(unsafe.Pointer(reason))
+
+			cCallTerm := (*C.CallTerminateEvent)(C.malloc(C.sizeof_CallTerminateEvent))
+			cCallTerm.callID = callID
+			cCallTerm.reason = reason
+
+			cevent := C.Event{
+				kind: C.uint8_t(EventTypeCallTerminate),
+				data: unsafe.Pointer(cCallTerm),
+			}
+			C.callEventCallback(eventHandler, &cevent)
+			C.free(unsafe.Pointer(cCallTerm))
 
 		case *events.Message:
 			HandleMessage(evt.Info, evt.Message, false)

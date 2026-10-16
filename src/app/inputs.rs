@@ -19,6 +19,18 @@ impl App<'_> {
     }
 
     fn handle_input(&mut self, key: Key) {
+        if self.incoming_call.is_some() {
+            if self.kh.kp(&[Key::c('a')]) || self.kh.kp(&[Key::k(KeyCode::Enter)]) {
+                self.accept_incoming_call();
+                return;
+            }
+            if self.kh.kp(&[Key::c('r')]) || self.kh.kp(&[Key::k(KeyCode::Esc)]) {
+                self.reject_incoming_call();
+                return;
+            }
+            return;
+        }
+
         if self.kh.kp(&[Key::ctrl('q')]) {
             self.db_handler.stop();
             self.should_quit = true;
@@ -166,6 +178,8 @@ impl App<'_> {
                     self.message_list_state.reset();
                     self.selected_widget = SelectedWidget::Input;
                 }
+            } else if self.kh.kp(&[Key::c('v')]) {
+                self.open_call_in_browser();
             } else if self.kh.kp(&[Key::c('/')]) {
                 self.contact_search_active = true;
             }
@@ -203,6 +217,8 @@ impl App<'_> {
             self.message_list_state.select_first();
         } else if self.kh.kp(&[Key::c('g'), Key::c('g')]) {
             self.message_list_state.select_last();
+        } else if self.kh.kp(&[Key::c('v')]) {
+            self.open_call_in_browser();
         } else if self.kh.kp(&[Key::k(KeyCode::Esc)]) {
             self.message_list_state.reset();
         }

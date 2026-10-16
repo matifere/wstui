@@ -137,6 +137,8 @@ impl App<'_> {
             }
         } else if self.kh.kp(&[Key::c(' '), Key::c('s')]) {
             self.open_sticker_picker();
+        } else if self.kh.kp(&[Key::c(' '), Key::c('v')]) {
+            self.open_call_in_browser();
         } else if self.kh.kp(&[Key::c(' '), Key::c('p')]) {
             if let Ok(text) = self.clipboard.get_text() {
                 self.input_widget.insert_str(&text);

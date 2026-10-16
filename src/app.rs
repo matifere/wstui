@@ -64,6 +64,14 @@ pub struct StickerItem {
 }
 
 #[derive(Clone, Debug)]
+pub struct IncomingCall {
+    pub call_id: String,
+    pub caller: wr::JID,
+    pub is_video: bool,
+    pub timestamp: i64,
+}
+
+#[derive(Clone, Debug)]
 pub struct Chat {
     pub jid: wr::JID,
     pub last_message_time: Option<i64>,
@@ -129,6 +137,8 @@ pub struct App<'a> {
     pub sticker_list: Vec<StickerItem>,
     pub sticker_list_state: ListState,
 
+    pub incoming_call: Option<IncomingCall>,
+
     pub should_quit: bool,
 
     pub tx: mpsc::Sender<AppInput>,
@@ -192,6 +202,8 @@ impl Default for App<'_> {
 
             sticker_list: Vec::new(),
             sticker_list_state: ListState::default(),
+
+            incoming_call: None,
 
             show_logs: false,
             vim: Vim::new(vim::Mode::Insert),
@@ -470,6 +482,35 @@ impl App<'_> {
                                 self.db_handler.add_message(message);
                             }
                         }
+                        true
+                    }
+                    wr::Event::CallOffer {
+                        call_id,
+                        caller,
+                        is_video,
+                        timestamp,
+                    } => {
+                        let caller_name = self.contact_name(&caller);
+                        let call_type = if is_video { "Videollamada" } else { "Llamada de voz" };
+                        let _ = Notification::new()
+                            .summary(&format!("📞 {} entrante", call_type))
+                            .body(&format!("De: {}", caller_name))
+                            .show();
+                        self.incoming_call = Some(IncomingCall {
+                            call_id,
+                            caller,
+                            is_video,
+                            timestamp,
+                        });
+                        true
+                    }
+                    wr::Event::CallTerminate { call_id, reason } => {
+                        if let Some(current) = &self.incoming_call {
+                            if current.call_id == call_id {
+                                self.incoming_call = None;
+                            }
+                        }
+                        log::info!("Llamada terminada: {} (motivo: {})", call_id, reason);
                         true
                     }
                 },
@@ -886,6 +927,55 @@ impl App<'_> {
                     .map(|m| m.info.timestamp)
                     .unwrap_or(i64::MIN)
             });
+        }
+    }
+
+    pub fn open_call_in_browser(&self) {
+        if let Some(chat) = self.get_selected_chat() {
+            let jid_str = chat.as_ref();
+            let url = if jid_str.ends_with("@s.whatsapp.net") {
+                let phone = jid_str.split('@').next().unwrap_or(jid_str);
+                format!("https://web.whatsapp.com/send?phone={}", phone)
+            } else {
+                "https://web.whatsapp.com".to_string()
+            };
+            self.launch_browser_url(&url);
+        }
+    }
+
+    pub fn accept_incoming_call(&mut self) {
+        if let Some(call) = self.incoming_call.take() {
+            let jid_str = call.caller.as_ref();
+            let url = if jid_str.ends_with("@s.whatsapp.net") {
+                let phone = jid_str.split('@').next().unwrap_or(jid_str);
+                format!("https://web.whatsapp.com/send?phone={}", phone)
+            } else {
+                "https://web.whatsapp.com".to_string()
+            };
+            self.launch_browser_url(&url);
+        }
+    }
+
+    pub fn reject_incoming_call(&mut self) {
+        if let Some(call) = self.incoming_call.take() {
+            wr::reject_call(&call.caller, &call.call_id);
+            log::info!("Llamada rechazada: {}", call.call_id);
+        }
+    }
+
+    pub fn launch_browser_url(&self, url: &str) {
+        if let Ok(custom_cmd) = std::env::var("WSTUI_BROWSER") {
+            let cmd = if custom_cmd.contains("%s") {
+                custom_cmd.replace("%s", url)
+            } else {
+                format!("{} \"{}\"", custom_cmd, url)
+            };
+            let _ = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(cmd)
+                .spawn();
+        } else {
+            let _ = open::that(url);
         }
     }
 }
