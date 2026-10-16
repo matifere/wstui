@@ -127,6 +127,7 @@ static void callLogInfo(LogHandler hdl, const char* msg, uint8_t level) {
 */
 import "C"
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/hex"
@@ -169,6 +170,8 @@ var (
 	videoStdin   io.WriteCloser
 	audioCmd     *exec.Cmd
 	audioStdin   io.WriteCloser
+	micCmd       *exec.Cmd
+	camCmd       *exec.Cmd
 )
 
 func cleanupCallMedia() {
@@ -190,6 +193,14 @@ func cleanupCallMedia() {
 	if audioCmd != nil && audioCmd.Process != nil {
 		_ = audioCmd.Process.Kill()
 		audioCmd = nil
+	}
+	if micCmd != nil && micCmd.Process != nil {
+		_ = micCmd.Process.Kill()
+		micCmd = nil
+	}
+	if camCmd != nil && camCmd.Process != nil {
+		_ = camCmd.Process.Kill()
+		camCmd = nil
 	}
 	activeCall = nil
 }
@@ -916,12 +927,12 @@ func C_AnswerCall(callID *C.char) C.bool {
 		LOG_ERROR("Failed to start ffplay for video: %v", err)
 	}
 
-	// Launch audio player (pw-play -> paplay -> ffplay)
+	// Launch audio playback (paplay -> pw-play -> ffplay)
 	var aCmd *exec.Cmd
-	if _, err := exec.LookPath("pw-play"); err == nil {
-		aCmd = exec.Command("pw-play", "--rate", "16000", "--channels", "1", "--format", "s16", "-")
-	} else if _, err := exec.LookPath("paplay"); err == nil {
+	if _, err := exec.LookPath("paplay"); err == nil {
 		aCmd = exec.Command("paplay", "--raw", "--rate=16000", "--channels=1", "--format=s16le")
+	} else if _, err := exec.LookPath("pw-play"); err == nil {
+		aCmd = exec.Command("pw-play", "--rate", "16000", "--channels", "1", "--format", "s16", "-")
 	} else {
 		aCmd = exec.Command("ffplay", "-f", "s16le", "-ar", "16000", "-ac", "1", "-nodisp", "-autoexit", "-i", "pipe:0")
 	}
@@ -933,7 +944,7 @@ func C_AnswerCall(callID *C.char) C.bool {
 
 	aIn, aErr := aCmd.StdinPipe()
 	if aErr == nil && aCmd.Start() == nil {
-		LOG_INFO("Audio player started with PID %d", aCmd.Process.Pid)
+		LOG_INFO("Audio player (%s) started with PID %d", aCmd.Path, aCmd.Process.Pid)
 		activeCallMu.Lock()
 		audioCmd = aCmd
 		audioStdin = aIn
@@ -977,6 +988,80 @@ func C_AnswerCall(callID *C.char) C.bool {
 		LOG_ERROR("Failed to start audio player: %v", aErr)
 	}
 
+	// Launch microphone capture (parec -> WhatsApp)
+	if _, err := exec.LookPath("parec"); err == nil {
+		mCmd := exec.Command("parec", "-d", "@DEFAULT_SOURCE@", "--raw", "--rate=16000", "--channels=1", "--format=s16le")
+		mLog, _ := os.OpenFile("/tmp/wstui_mic.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+		if mLog != nil {
+			mCmd.Stderr = mLog
+		}
+		micOut, mErr := mCmd.StdoutPipe()
+		if mErr == nil && mCmd.Start() == nil {
+			LOG_INFO("Microphone capture (parec) started with PID %d", mCmd.Process.Pid)
+			activeCallMu.Lock()
+			micCmd = mCmd
+			activeCallMu.Unlock()
+
+			go func() {
+				_ = mCmd.Wait()
+				LOG_INFO("Microphone capture exited")
+				activeCallMu.Lock()
+				if micCmd == mCmd {
+					micCmd = nil
+				}
+				activeCallMu.Unlock()
+			}()
+
+			call.Play(meowcaller.PCMStream(micOut))
+		} else {
+			LOG_ERROR("Failed to start microphone capture: %v", mErr)
+		}
+	}
+
+	// Launch webcam capture (ffmpeg -> WhatsApp)
+	if _, err := os.Stat("/dev/video0"); err == nil {
+		cCmd := exec.Command("ffmpeg",
+			"-f", "v4l2",
+			"-input_format", "yuyv422",
+			"-video_size", "640x480",
+			"-framerate", "30",
+			"-i", "/dev/video0",
+			"-c:v", "libx264",
+			"-preset", "ultrafast",
+			"-tune", "zerolatency",
+			"-b:v", "400k",
+			"-g", "15",
+			"-x264opts", "aud=1",
+			"-f", "h264",
+			"pipe:1",
+		)
+		cLog, _ := os.OpenFile("/tmp/wstui_cam.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+		if cLog != nil {
+			cCmd.Stderr = cLog
+		}
+		camOut, cErr := cCmd.StdoutPipe()
+		if cErr == nil && cCmd.Start() == nil {
+			LOG_INFO("Webcam capture (ffmpeg) started with PID %d", cCmd.Process.Pid)
+			activeCallMu.Lock()
+			camCmd = cCmd
+			activeCallMu.Unlock()
+
+			go func() {
+				_ = cCmd.Wait()
+				LOG_INFO("Webcam capture exited")
+				activeCallMu.Lock()
+				if camCmd == cCmd {
+					camCmd = nil
+				}
+				activeCallMu.Unlock()
+			}()
+
+			go streamWebcamToCall(call, camOut)
+		} else {
+			LOG_WARN("Could not start webcam capture: %v", cErr)
+		}
+	}
+
 	if err := call.Answer(); err != nil {
 		LOG_ERROR("call.Answer error: %v", err)
 		cleanupCallMedia()
@@ -985,6 +1070,68 @@ func C_AnswerCall(callID *C.char) C.bool {
 
 	LOG_INFO("call.Answer() succeeded for %s", call.ID())
 	return C.bool(true)
+}
+
+func streamWebcamToCall(call *meowcaller.Call, r io.Reader) {
+	audPattern := []byte{0x00, 0x00, 0x00, 0x01, 0x09}
+	audPattern3 := []byte{0x00, 0x00, 0x01, 0x09}
+
+	buf := make([]byte, 65536)
+	var accumulated []byte
+	var sentFrames uint64
+
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			accumulated = append(accumulated, buf[:n]...)
+
+			for {
+				if sentFrames == 0 {
+					firstIdx := bytes.Index(accumulated, audPattern)
+					if firstIdx < 0 {
+						firstIdx = bytes.Index(accumulated, audPattern3)
+					}
+					if firstIdx > 0 {
+						accumulated = accumulated[firstIdx:]
+					} else if firstIdx < 0 {
+						if len(accumulated) > 131072 {
+							accumulated = nil
+						}
+						break
+					}
+				}
+
+				idx := -1
+				if len(accumulated) > 5 {
+					if i := bytes.Index(accumulated[4:], audPattern); i >= 0 {
+						idx = i + 4
+					} else if i := bytes.Index(accumulated[3:], audPattern3); i >= 0 {
+						idx = i + 3
+					}
+				}
+
+				if idx < 0 {
+					break
+				}
+
+				au := make([]byte, idx)
+				copy(au, accumulated[:idx])
+				accumulated = accumulated[idx:]
+
+				if len(au) > 0 {
+					sentFrames++
+					if sentFrames == 1 || sentFrames%60 == 0 {
+						LOG_INFO("Sent outbound camera frame #%d (%d bytes)", sentFrames, len(au))
+					}
+					_ = call.SendVideo(au)
+				}
+			}
+		}
+		if err != nil {
+			LOG_INFO("Webcam stream reader ended: %v", err)
+			break
+		}
+	}
 }
 
 //export C_HangupCall
