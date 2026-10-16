@@ -140,6 +140,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -172,11 +173,36 @@ var (
 	audioStdin   io.WriteCloser
 	micCmd       *exec.Cmd
 	camCmd       *exec.Cmd
+	echoModuleID string
 )
+
+func unloadWstuiEchoModules() {
+	if _, err := exec.LookPath("pactl"); err != nil {
+		return
+	}
+	out, err := exec.Command("pactl", "list", "modules", "short").Output()
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.Contains(line, "wstui-echo") {
+			fields := strings.Fields(line)
+			if len(fields) > 0 {
+				_ = exec.Command("pactl", "unload-module", fields[0]).Run()
+			}
+		}
+	}
+}
 
 func cleanupCallMedia() {
 	activeCallMu.Lock()
 	defer activeCallMu.Unlock()
+
+	if echoModuleID != "" {
+		_ = exec.Command("pactl", "unload-module", echoModuleID).Run()
+		echoModuleID = ""
+	}
+	unloadWstuiEchoModules()
 
 	if videoStdin != nil {
 		_ = videoStdin.Close()
@@ -927,10 +953,32 @@ func C_AnswerCall(callID *C.char) C.bool {
 		LOG_ERROR("Failed to start ffplay for video: %v", err)
 	}
 
+	// Try loading WebRTC acoustic echo cancellation module in PulseAudio/PipeWire
+	sinkName := "@DEFAULT_SINK@"
+	sourceName := "@DEFAULT_SOURCE@"
+	if _, err := exec.LookPath("pactl"); err == nil {
+		unloadWstuiEchoModules()
+		out, err := exec.Command("pactl", "load-module", "module-echo-cancel",
+			"aec_method=webrtc",
+			"source_name=wstui-echo-source",
+			"sink_name=wstui-echo-sink").Output()
+		if err == nil {
+			modID := strings.TrimSpace(string(out))
+			activeCallMu.Lock()
+			echoModuleID = modID
+			activeCallMu.Unlock()
+			sinkName = "wstui-echo-sink"
+			sourceName = "wstui-echo-source"
+			LOG_INFO("Loaded echo-cancel module ID %s (sink: %s, source: %s)", modID, sinkName, sourceName)
+		} else {
+			LOG_WARN("Could not load module-echo-cancel: %v", err)
+		}
+	}
+
 	// Launch audio playback (paplay -> pw-play -> ffplay)
 	var aCmd *exec.Cmd
 	if _, err := exec.LookPath("paplay"); err == nil {
-		aCmd = exec.Command("paplay", "--raw", "--rate=16000", "--channels=1", "--format=s16le")
+		aCmd = exec.Command("paplay", "-d", sinkName, "--raw", "--rate=16000", "--channels=1", "--format=s16le")
 	} else if _, err := exec.LookPath("pw-play"); err == nil {
 		aCmd = exec.Command("pw-play", "--rate", "16000", "--channels", "1", "--format", "s16", "-")
 	} else {
@@ -990,7 +1038,7 @@ func C_AnswerCall(callID *C.char) C.bool {
 
 	// Launch microphone capture (parec -> WhatsApp)
 	if _, err := exec.LookPath("parec"); err == nil {
-		mCmd := exec.Command("parec", "-d", "@DEFAULT_SOURCE@", "--latency-msec=20", "--process-time-msec=20", "--raw", "--rate=16000", "--channels=1", "--format=s16le")
+		mCmd := exec.Command("parec", "-d", sourceName, "--latency-msec=20", "--process-time-msec=20", "--raw", "--rate=16000", "--channels=1", "--format=s16le")
 		mLog, _ := os.OpenFile("/tmp/wstui_mic.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 		if mLog != nil {
 			mCmd.Stderr = mLog
