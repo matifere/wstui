@@ -990,7 +990,7 @@ func C_AnswerCall(callID *C.char) C.bool {
 
 	// Launch microphone capture (parec -> WhatsApp)
 	if _, err := exec.LookPath("parec"); err == nil {
-		mCmd := exec.Command("parec", "-d", "@DEFAULT_SOURCE@", "--raw", "--rate=16000", "--channels=1", "--format=s16le")
+		mCmd := exec.Command("parec", "-d", "@DEFAULT_SOURCE@", "--latency-msec=20", "--process-time-msec=20", "--raw", "--rate=16000", "--channels=1", "--format=s16le")
 		mLog, _ := os.OpenFile("/tmp/wstui_mic.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 		if mLog != nil {
 			mCmd.Stderr = mLog
@@ -1026,12 +1026,15 @@ func C_AnswerCall(callID *C.char) C.bool {
 			"-video_size", "640x480",
 			"-framerate", "30",
 			"-i", "/dev/video0",
+			"-pix_fmt", "yuv420p",
 			"-c:v", "libx264",
+			"-profile:v", "baseline",
+			"-level", "3.0",
 			"-preset", "ultrafast",
 			"-tune", "zerolatency",
 			"-b:v", "400k",
 			"-g", "15",
-			"-x264opts", "aud=1",
+			"-x264opts", "aud=1:repeat-headers=1",
 			"-f", "h264",
 			"pipe:1",
 		)
@@ -1123,7 +1126,9 @@ func streamWebcamToCall(call *meowcaller.Call, r io.Reader) {
 					if sentFrames == 1 || sentFrames%60 == 0 {
 						LOG_INFO("Sent outbound camera frame #%d (%d bytes)", sentFrames, len(au))
 					}
-					_ = call.SendVideo(au)
+					if err := call.SendVideo(au); err != nil {
+						LOG_WARN("SendVideo error: %v", err)
+					}
 				}
 			}
 		}

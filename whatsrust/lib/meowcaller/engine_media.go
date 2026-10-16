@@ -1419,21 +1419,17 @@ func (vs *videoSender) protectAccessUnitLocked(au []byte, duration time.Duration
 		return nil
 	}
 	nalus := rtp.SplitAnnexB(au)
-	var packedAccessUnit []byte
+	var payloads [][]byte
 	for _, n := range nalus {
 		if len(n) == 0 || n[0]&0x1f == 9 {
 			continue
 		}
-		if len(packedAccessUnit) > 0 {
-			packedAccessUnit = append(packedAccessUnit, 0, 0, 0, 1)
-		}
-		packedAccessUnit = append(packedAccessUnit, n...)
+		pkts := rtp.PackageH264NALU(n)
+		payloads = append(payloads, pkts...)
 	}
-	if len(packedAccessUnit) == 0 {
+	if len(payloads) == 0 {
 		return nil
 	}
-	// WhatsApp fragments the complete Annex-B access unit as one RTP NAL unit.
-	payloads := rtp.PackageH264NALU(packedAccessUnit)
 	captureWire := vs.frame < videoWireFrameLimit
 	if captureWire {
 		vs.diag.Emit("video_wire", map[string]any{

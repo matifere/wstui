@@ -74,8 +74,8 @@ func TestVideoSenderStartsAtIDRAndUsesWhatsappHeaders(t *testing.T) {
 		0, 0, 0, 1, 0x65, 1, 2, 3,
 	}
 	packets := sender.protectAccessUnit(idr, 50*time.Millisecond)
-	if len(packets) != 1 {
-		t.Fatalf("IDR produced %d packets, want one packed access-unit packet", len(packets))
+	if len(packets) != 3 {
+		t.Fatalf("IDR produced %d packets, want 3 NAL unit packets", len(packets))
 	}
 	receiver, err := NewMediaPipeline(callKey, "222222222222222:0@lid", "111111111111111:0@lid", 0x55667788, FrameSamples)
 	if err != nil {
