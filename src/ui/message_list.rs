@@ -9,9 +9,9 @@ use ratatui::{
     Frame,
     buffer::Buffer,
     layout::{Constraint, Layout, Rect},
-    style::{Style, Stylize},
-    text::Line,
-    widgets::{Block, Borders, Paragraph, StatefulWidget, Widget},
+    style::{Color, Style, Stylize},
+    text::{Line, Span},
+    widgets::{Block, BorderType, Borders, Paragraph, StatefulWidget, Widget},
 };
 use ratatui_image::StatefulImage;
 use textwrap;
@@ -81,9 +81,7 @@ fn render_message(
     render_image: bool,
 ) {
     if is_selected {
-        let style = Style::default()
-            .bg(ratatui::style::Color::Gray)
-            .fg(ratatui::style::Color::Black);
+        let style = Style::default().bg(Color::Rgb(30, 42, 65));
         buf.set_style(area, style);
     }
 
@@ -94,7 +92,7 @@ fn render_message(
     //     ratatui::layout::Alignment::Left
     // };
 
-    let timestamp = {
+    let timestamp_str = {
         let local_time: DateTime<Local> = DateTime::from_timestamp(message.info.timestamp, 0)
             .unwrap()
             .into();
@@ -102,7 +100,7 @@ fn render_message(
             local_time.format("%H:%M").to_string()
         } else if local_time.date_naive() == (Local::now() - chrono::Duration::days(1)).date_naive()
         {
-            local_time.format("Yesterday %H:%M").to_string()
+            local_time.format("Ayer %H:%M").to_string()
         } else if local_time > (Local::now() - chrono::Duration::days(7)) {
             local_time.format("%a %H:%M").to_string()
         } else if local_time.year() == Local::now().year() {
@@ -110,22 +108,34 @@ fn render_message(
         } else {
             local_time.format("%Y %d %b %H:%M").to_string()
         }
-    }
-    .italic();
+    };
 
     let sender_name = app.contact_name(&message.info.sender);
+    let sender_style = if message.info.is_from_me {
+        Style::default().fg(Color::Cyan).bold()
+    } else {
+        Style::default().fg(Color::LightGreen).bold()
+    };
+
+    let display_name = if message.info.is_from_me {
+        "Tú".to_string()
+    } else {
+        sender_name.to_string()
+    };
 
     let mut header = vec![
-        sender_name.to_string().bold(),
-        " (".into(),
-        timestamp,
-        ")".into(),
+        Span::styled(display_name, sender_style),
+        Span::styled(" (", Style::default().fg(Color::DarkGray)),
+        Span::styled(timestamp_str, Style::default().fg(Color::DarkGray)),
+        Span::styled(")", Style::default().fg(Color::DarkGray)),
     ];
     if message.info.read_by >= 1 {
-        header.push(" ✓".into());
+        header.push(Span::styled(" ✓✓", Style::default().fg(Color::Cyan).bold()));
+    } else if message.info.is_from_me {
+        header.push(Span::styled(" ✓", Style::default().fg(Color::DarkGray)));
     }
-    header.push(" ".into());
-    let msg_block = Block::default().borders(Borders::NONE).title(header);
+    header.push(Span::raw(" "));
+    let msg_block = Block::default().borders(Borders::NONE).title(Line::from(header));
 
     // let sender_widget = Line::from_iter(header).alignment(alignment).bold();
 
@@ -286,16 +296,39 @@ fn render_message(
 pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<()> {
     let chat_jid = app.get_selected_chat()?;
 
+    let is_focused = matches!(app.selected_widget, SelectedWidget::MessageList);
+    let border_color = if is_focused {
+        Color::Cyan
+    } else {
+        Color::DarkGray
+    };
+
+    let is_group = chat_jid.0.ends_with("@g.us");
+    let icon = if is_group { "👥 Grupo: " } else { "💬 Chat con: " };
+    let name = app.contact_name(&chat_jid);
+
+    let title_line = Line::from(vec![
+        Span::raw(" "),
+        Span::styled(icon, Style::default().fg(Color::Cyan).bold()),
+        Span::styled(
+            name.to_string(),
+            Style::default().fg(Color::Rgb(255, 215, 0)).bold().underlined(),
+        ),
+        Span::raw(" "),
+    ]);
+
+    let bottom_help = Line::from(vec![
+        Span::styled(
+            " [j/k: mensajes | r: responder | s: fav sticker ⭐ | Ctrl+S: stickers | Ctrl+J: escribir] ",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]);
+
     let block = Block::bordered()
-        .title(format!("Chat with {}", app.contact_name(&chat_jid)))
-        .title_bottom(format!("{:?}", app.kh.key_buffer))
-        .border_style(Style::default().fg(
-            if let SelectedWidget::MessageList = app.selected_widget {
-                ratatui::style::Color::Green
-            } else {
-                ratatui::style::Color::White
-            },
-        ));
+        .border_type(BorderType::Rounded)
+        .title(title_line)
+        .title_bottom(bottom_help)
+        .border_style(Style::default().fg(border_color));
     frame.render_widget(&block, area);
 
     let list_area = block.inner(area);

@@ -135,6 +135,8 @@ impl App<'_> {
             if let Some(path) = FileDialog::new().pick_file() {
                 self.attached_file = Some((path.to_str().unwrap().into(), wr::FileKind::Document));
             }
+        } else if self.kh.kp(&[Key::c(' '), Key::c('s')]) {
+            self.open_sticker_picker();
         } else if self.kh.kp(&[Key::c(' '), Key::c('p')]) {
             if let Ok(text) = self.clipboard.get_text() {
                 self.input_widget.insert_str(&text);

@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path"
+	"path/filepath"
+	"strings"
 
 	"go.mau.fi/whatsmeow"
 )
@@ -133,6 +137,37 @@ func DownloadFromFileId(client *whatsmeow.Client, fileId string, basePath string
 	fileStatus := FileStatusNone
 
 	os.MkdirAll(path.Dir(targetPath), os.ModePerm)
+
+	// For stickers, deduplicate by content SHA-256
+	if strings.HasPrefix(info.TargetPath, "stickers/") && len(info.FileSha256) > 0 {
+		shaHex := hex.EncodeToString(info.FileSha256)
+		ext := filepath.Ext(info.TargetPath)
+		if ext == "" {
+			ext = ".webp"
+		}
+		canonicalRel := fmt.Sprintf("stickers/%s%s", shaHex, ext)
+		canonicalPath := path.Join(basePath, canonicalRel)
+		os.MkdirAll(path.Dir(canonicalPath), os.ModePerm)
+
+		if _, statErr := os.Stat(canonicalPath); os.IsNotExist(statErr) {
+			data, err := DownloadFromFileInfo(client, info)
+			if err != nil {
+				return FileStatusDownloadFailed
+			}
+			err = os.WriteFile(canonicalPath, data, os.ModePerm)
+			if err != nil {
+				return FileStatusDownloadFailed
+			}
+		}
+
+		if targetPath != canonicalPath {
+			if _, statErr := os.Lstat(targetPath); os.IsNotExist(statErr) {
+				_ = os.Symlink(fmt.Sprintf("%s%s", shaHex, ext), targetPath)
+			}
+		}
+
+		return FileStatusDownloaded
+	}
 
 	// download if not yet present
 	if _, statErr := os.Stat(targetPath); os.IsNotExist(statErr) {

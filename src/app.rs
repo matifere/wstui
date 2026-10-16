@@ -53,6 +53,14 @@ pub enum SelectedWidget {
     Input,
     MessageList,
     MessageView,
+    StickerPicker,
+}
+
+#[derive(Clone, Debug)]
+pub struct StickerItem {
+    pub path: PathBuf,
+    pub filename: String,
+    pub is_favorite: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -118,6 +126,9 @@ pub struct App<'a> {
     pub contact_search: TextInput,
     pub filtered_chats: Vec<wr::JID>,
 
+    pub sticker_list: Vec<StickerItem>,
+    pub sticker_list_state: ListState,
+
     pub should_quit: bool,
 
     pub tx: mpsc::Sender<AppInput>,
@@ -178,6 +189,9 @@ impl Default for App<'_> {
             contact_search_active: false,
             contact_search: TextInput::new(),
             filtered_chats: Vec::new(),
+
+            sticker_list: Vec::new(),
+            sticker_list_state: ListState::default(),
 
             show_logs: false,
             vim: Vim::new(vim::Mode::Insert),
@@ -523,10 +537,141 @@ impl App<'_> {
 
     /// Display name for a JID (chat or sender). Falls back to the JID string if not in contacts.
     pub fn contact_name(&self, jid: &wr::JID) -> Arc<str> {
-        self.contacts
-            .get(jid)
-            .cloned()
-            .unwrap_or_else(|| jid.0.clone())
+        if let Some(name) = self.contacts.get(jid) {
+            return name.clone();
+        }
+        if let Some(phone) = jid.0.strip_suffix("@s.whatsapp.net") {
+            return format!("+{phone}").into();
+        }
+        if let Some(group_id) = jid.0.strip_suffix("@g.us") {
+            return format!("Grupo {group_id}").into();
+        }
+        jid.0.clone()
+    }
+
+    pub fn load_favorite_stickers(&self) -> std::collections::HashSet<String> {
+        let file = self.media_path.join("favorite_stickers.txt");
+        if let Ok(content) = std::fs::read_to_string(&file) {
+            content
+                .lines()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        } else {
+            std::collections::HashSet::new()
+        }
+    }
+
+    pub fn load_stickers(&mut self) {
+        let stickers_dir = self.media_path.join("stickers");
+        let favs = self.load_favorite_stickers();
+
+        let mut items = Vec::new();
+        let mut seen_canonical = std::collections::HashSet::new();
+        let mut seen_hashes = std::collections::HashSet::new();
+
+        if let Ok(entries) = std::fs::read_dir(&stickers_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                // Skip symlinks to avoid duplicate entries from backward-compatibility aliases
+                if path.is_symlink() {
+                    continue;
+                }
+                if path.extension().and_then(|s| s.to_str()) == Some("webp") {
+                    if let Ok(canonical) = std::fs::canonicalize(&path) {
+                        if !seen_canonical.insert(canonical) {
+                            continue;
+                        }
+                    }
+
+                    let filename = path.file_name().unwrap().to_string_lossy().to_string();
+                    let stem = path.file_stem().unwrap().to_string_lossy().to_string();
+
+                    // Calculate hash or use stem if already sha256 hex
+                    let hash = if stem.len() == 64 && stem.chars().all(|c| c.is_ascii_hexdigit()) {
+                        stem.to_lowercase()
+                    } else if let Ok(bytes) = std::fs::read(&path) {
+                        use sha2::{Digest, Sha256};
+                        let mut hasher = Sha256::new();
+                        hasher.update(&bytes);
+                        format!("{:x}", hasher.finalize())
+                    } else {
+                        filename.clone()
+                    };
+
+                    if !seen_hashes.insert(hash.clone()) {
+                        continue;
+                    }
+
+                    let is_favorite = favs.contains(&filename) || favs.contains(&format!("{}.webp", hash));
+                    items.push(StickerItem {
+                        path,
+                        filename,
+                        is_favorite,
+                    });
+                }
+            }
+        }
+
+        // Sort: favorites first, then by file modification time (newest first)
+        items.sort_by(|a, b| {
+            if a.is_favorite != b.is_favorite {
+                return b.is_favorite.cmp(&a.is_favorite);
+            }
+            let mtime_a = a.path.metadata().and_then(|m| m.modified()).ok();
+            let mtime_b = b.path.metadata().and_then(|m| m.modified()).ok();
+            mtime_b.cmp(&mtime_a)
+        });
+
+        self.sticker_list = items;
+        if !self.sticker_list.is_empty() && self.sticker_list_state.selected().is_none() {
+            self.sticker_list_state.select(Some(0));
+        }
+    }
+
+    pub fn open_sticker_picker(&mut self) {
+        self.load_stickers();
+        self.selected_widget = SelectedWidget::StickerPicker;
+    }
+
+    pub fn toggle_favorite_sticker(&mut self, rel_path: &str) {
+        let filename = std::path::Path::new(rel_path)
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_else(|| rel_path.to_string());
+
+        let file = self.media_path.join("favorite_stickers.txt");
+        let mut favs = self.load_favorite_stickers();
+        if favs.contains(&filename) {
+            favs.remove(&filename);
+            log::info!("Sticker removido de favoritos: {}", filename);
+        } else {
+            favs.insert(filename.clone());
+            log::info!("Sticker añadido a favoritos: {}", filename);
+        }
+
+        let serialized = favs.into_iter().collect::<Vec<_>>().join("\n");
+        let _ = std::fs::write(file, serialized);
+        self.load_stickers();
+    }
+
+    pub fn send_selected_sticker(&mut self) {
+        if let Some(idx) = self.sticker_list_state.selected() {
+            if let Some(sticker) = self.sticker_list.get(idx) {
+                if let Some(c) = self.get_selected_chat() {
+                    let msg = wr::MessageContent::File(wr::FileContent {
+                        kind: wr::FileKind::Sticker,
+                        path: sticker.path.to_str().unwrap().into(),
+                        file_id: "".into(),
+                        caption: None,
+                    });
+                    wr::send_message(&c, &msg, self.quoting_message.as_ref());
+                    self.quoting_message = None;
+                    log::info!("Sticker enviado: {:?}", sticker.filename);
+                }
+            }
+        }
+        self.selected_widget = SelectedWidget::Input;
     }
 
     fn handle_notification(&self, message: &wr::Message) {

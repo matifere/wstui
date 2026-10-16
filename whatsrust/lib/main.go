@@ -116,6 +116,7 @@ static void callLogInfo(LogHandler hdl, const char* msg, uint8_t level) {
 import "C"
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"mime"
@@ -422,6 +423,23 @@ func ContentToWaE2EMessage(messageType C.uint8_t, messageContent unsafe.Pointer,
 					ContextInfo:   contextInfo,
 				},
 			}
+		case FileTypeSticker:
+			uploaded, upErr := client.Upload(context.Background(), data, whatsmeow.MediaImage)
+			if upErr != nil {
+				panic(fmt.Sprintf("upload sticker error %#v", upErr))
+			}
+			return &waE2E.Message{
+				StickerMessage: &waE2E.StickerMessage{
+					URL:           proto.String(uploaded.URL),
+					DirectPath:    proto.String(uploaded.DirectPath),
+					MediaKey:      uploaded.MediaKey,
+					Mimetype:      proto.String("image/webp"),
+					FileEncSHA256: uploaded.FileEncSHA256,
+					FileSHA256:    uploaded.FileSHA256,
+					FileLength:    proto.Uint64(uint64(len(data))),
+					ContextInfo:   contextInfo,
+				},
+			}
 		case FileTypeDocument:
 			uploaded, upErr := client.Upload(context.Background(), data, whatsmeow.MediaDocument)
 			if upErr != nil {
@@ -715,7 +733,14 @@ func HandleMessage(info types.MessageInfo, msg *waE2E.Message, isSync bool) {
 			}
 		}
 
-		filePath := fmt.Sprintf("stickers/%s%s", info.ID, ext)
+		sha := sticker.GetFileSHA256()
+		var fileName string
+		if len(sha) > 0 {
+			fileName = hex.EncodeToString(sha)
+		} else {
+			fileName = info.ID
+		}
+		filePath := fmt.Sprintf("stickers/%s%s", fileName, ext)
 		fileId := DownloadableMessageToFileId(client, sticker, filePath)
 		cfileId := C.CString(fileId)
 		defer C.free(unsafe.Pointer(cfileId))

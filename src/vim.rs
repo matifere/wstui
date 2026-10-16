@@ -4,7 +4,8 @@
 // };
 // use ratatui::backend::CrosstermBackend;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, Borders};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, BorderType, Borders};
 // use ratatui::{Terminal, crossterm};
 // use std::env;
 use std::fmt;
@@ -24,17 +25,49 @@ pub enum Mode {
 
 impl Mode {
     pub fn block<'a>(&self) -> Block<'a> {
-        let help = match self {
-            Self::Normal => "type i to enter insert mode",
-            Self::Insert => "type Esc to back to normal mode",
-            Self::Visual => "type y to yank, type d to delete, type Esc to back to normal mode",
-            Self::VisualLine => {
-                "type y to yank, type d to delete, type Esc to back to normal mode"
-            }
-            Self::Operator(_) => "move cursor to apply operator",
+        let (mode_badge, help_text, badge_color) = match self {
+            Self::Normal => (
+                " NORMAL ",
+                " 'i': escribir | 'Ctrl+S': STICKERS 🎭 | 'Ctrl+X': enviar ",
+                Color::Cyan,
+            ),
+            Self::Insert => (
+                " INSERTAR ",
+                " 'Ctrl+S': STICKERS 🎭 | 'Ctrl+X': ENVIAR | 'Esc': normal ",
+                Color::Green,
+            ),
+            Self::Visual => (
+                " VISUAL ",
+                " 'y': copiar | 'd': borrar | 'Esc': salir ",
+                Color::Yellow,
+            ),
+            Self::VisualLine => (
+                " LÍNEA VISUAL ",
+                " 'y': copiar | 'd': borrar | 'Esc': salir ",
+                Color::Yellow,
+            ),
+            Self::Operator(_) => (
+                " OPERADOR ",
+                " mueve el cursor para aplicar ",
+                Color::LightGreen,
+            ),
         };
-        let title = format!("{} MODE ({})", self, help);
-        Block::default().borders(Borders::ALL).title(title)
+
+        let title = Line::from(vec![
+            Span::styled(
+                format!(" [{mode_badge}] "),
+                Style::default().fg(badge_color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("({})", help_text),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]);
+
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title(title)
     }
 
     pub fn cursor_style(&self) -> Style {

@@ -30,6 +30,15 @@ impl App<'_> {
             return;
         }
 
+        if self.kh.kp(&[Key::ctrl('s')]) {
+            if let SelectedWidget::StickerPicker = self.selected_widget {
+                self.selected_widget = SelectedWidget::Input;
+            } else {
+                self.open_sticker_picker();
+            }
+            return;
+        }
+
         // if self.kh.kp(&[Key::ctrl('p')]) {
         //     let next = {
         //         let mut picker = self.picker.lock().unwrap();
@@ -95,6 +104,7 @@ impl App<'_> {
                     return;
                 }
             }
+            SelectedWidget::StickerPicker => {}
         }
 
         match self.selected_widget {
@@ -108,6 +118,9 @@ impl App<'_> {
                 self.input_on_event(&key);
             }
             SelectedWidget::MessageView => {}
+            SelectedWidget::StickerPicker => {
+                self.sticker_picker_on_event();
+            }
         }
     }
 
@@ -235,6 +248,12 @@ impl App<'_> {
                         }
                     }
                 }
+            } else if self.kh.kp(&[Key::c('s')]) {
+                if let wr::MessageContent::File(content) = &msg.message {
+                    if matches!(content.kind, wr::FileKind::Sticker) {
+                        self.toggle_favorite_sticker(&content.path);
+                    }
+                }
             }
 
             if let Some(ref quote_id) = msg.info.quote_id {
@@ -243,6 +262,52 @@ impl App<'_> {
                         .set_selected_message(quote_id.clone());
                 }
             }
+        }
+    }
+
+    fn sticker_picker_on_event(&mut self) {
+        if self.kh.kp(&[Key::k(KeyCode::Esc)]) || self.kh.kp(&[Key::c('q')]) {
+            self.selected_widget = SelectedWidget::Input;
+            return;
+        }
+
+        if self.kh.kp(&[Key::c('j')]) || self.kh.kp(&[Key::k(KeyCode::Down)]) {
+            let len = self.sticker_list.len();
+            if len > 0 {
+                let next = match self.sticker_list_state.selected() {
+                    Some(i) => (i + 1).min(len - 1),
+                    None => 0,
+                };
+                self.sticker_list_state.select(Some(next));
+            }
+            return;
+        }
+
+        if self.kh.kp(&[Key::c('k')]) || self.kh.kp(&[Key::k(KeyCode::Up)]) {
+            let len = self.sticker_list.len();
+            if len > 0 {
+                let prev = match self.sticker_list_state.selected() {
+                    Some(i) => i.saturating_sub(1),
+                    None => 0,
+                };
+                self.sticker_list_state.select(Some(prev));
+            }
+            return;
+        }
+
+        if self.kh.kp(&[Key::k(KeyCode::Enter)]) {
+            self.send_selected_sticker();
+            return;
+        }
+
+        if self.kh.kp(&[Key::c('s')]) {
+            if let Some(idx) = self.sticker_list_state.selected() {
+                if let Some(sticker) = self.sticker_list.get(idx) {
+                    let path_str = sticker.path.to_string_lossy().to_string();
+                    self.toggle_favorite_sticker(&path_str);
+                }
+            }
+            return;
         }
     }
 }
