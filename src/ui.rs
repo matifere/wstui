@@ -453,7 +453,8 @@ fn render_incoming_call(frame: &mut Frame, app: &App, call: &crate::app::Incomin
 fn render_active_call_indicator(frame: &mut Frame, app: &App, call: &crate::app::IncomingCall, area: Rect) {
     let caller_name = app.contact_name(&call.caller);
     let type_icon = if call.is_video { "📹" } else { "📞" };
-    let text = format!(" {} En llamada: {} [Ctrl+H: Cortar] ", type_icon, caller_name);
+    let rot_hint = if call.is_video { " [Ctrl+R: Rotar]" } else { "" };
+    let text = format!(" {} En llamada: {}{}[Ctrl+H: Cortar] ", type_icon, caller_name, rot_hint);
     let width = (text.len() as u16 + 2).min(area.width.saturating_sub(4));
     let pill_area = Rect::new(area.width.saturating_sub(width + 2), 0, width, 3);
 
@@ -466,11 +467,16 @@ fn render_active_call_indicator(frame: &mut Frame, app: &App, call: &crate::app:
     let inner = block.inner(pill_area);
     frame.render_widget(block, pill_area);
 
-    let content = Paragraph::new(Line::from(vec![
+    let mut spans = vec![
         Span::styled(format!(" {} ", type_icon), Style::default().fg(Color::Green).bold()),
         Span::styled(caller_name.to_string(), Style::default().fg(Color::White).bold()),
-        Span::styled(" [Ctrl+H: Cortar]", Style::default().fg(Color::LightRed).bold()),
-    ]));
+    ];
+    if call.is_video {
+        spans.push(Span::styled(" [Ctrl+R: Rotar]", Style::default().fg(Color::Yellow).bold()));
+    }
+    spans.push(Span::styled(" [Ctrl+H: Cortar]", Style::default().fg(Color::LightRed).bold()));
+
+    let content = Paragraph::new(Line::from(spans));
 
     frame.render_widget(content, inner);
 }

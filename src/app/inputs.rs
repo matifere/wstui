@@ -35,9 +35,15 @@ impl App<'_> {
             return;
         }
 
-        if self.active_call.is_some() && self.kh.kp(&[Key::ctrl('h')]) {
-            self.hangup_active_call();
-            return;
+        if self.active_call.is_some() {
+            if self.kh.kp(&[Key::ctrl('h')]) {
+                self.hangup_active_call();
+                return;
+            }
+            if self.kh.kp(&[Key::ctrl('r')]) {
+                self.rotate_camera();
+                return;
+            }
         }
 
         if self.kh.kp(&[Key::ctrl('q')]) {

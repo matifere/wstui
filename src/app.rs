@@ -989,6 +989,13 @@ impl App<'_> {
         }
     }
 
+    pub fn rotate_camera(&mut self) {
+        if self.active_call.is_some() {
+            let orientation = wr::rotate_camera();
+            log::info!("Cámara rotada a orientación: {} ({}°)", orientation, orientation * 90);
+        }
+    }
+
     pub fn launch_browser_url(&self, url: &str) {
         if let Ok(custom_cmd) = std::env::var("WSTUI_BROWSER") {
             let cmd = if custom_cmd.contains("%s") {

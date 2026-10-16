@@ -1289,6 +1289,7 @@ type videoSender struct {
 	active           bool
 	sendGated        bool
 	keyframeRequired bool
+	orientation      uint8
 	log              zerolog.Logger
 	diag             *diag.Recorder
 }
@@ -1439,9 +1440,9 @@ func (vs *videoSender) protectAccessUnitLocked(au []byte, duration time.Duration
 		})
 	}
 	vs.stream.SetTimestampStride(videoRtpDurationSamples(duration))
-	mediaFrameInfo := rtp.VideoMediaFrameInfoDelta
+	mediaFrameInfo := (rtp.VideoMediaFrameInfoDelta & 0xFC) | (vs.orientation & 0x03)
 	if idr {
-		mediaFrameInfo = rtp.VideoMediaFrameInfoIDR
+		mediaFrameInfo = (rtp.VideoMediaFrameInfoIDR & 0xFC) | (vs.orientation & 0x03)
 	}
 	packets := make([][]byte, 0, len(payloads))
 	for i, payload := range payloads {
@@ -1488,6 +1489,16 @@ func (vs *videoSender) disable() {
 
 func (vs *videoSender) requestKeyframe() {
 	vs.mu.Lock()
+	vs.keyframeRequired = true
+	vs.mu.Unlock()
+}
+
+func (vs *videoSender) setOrientation(orientation int) {
+	if vs == nil {
+		return
+	}
+	vs.mu.Lock()
+	vs.orientation = uint8(orientation & 0x03)
 	vs.keyframeRequired = true
 	vs.mu.Unlock()
 }

@@ -172,8 +172,11 @@ var (
 	audioCmd     *exec.Cmd
 	audioStdin   io.WriteCloser
 	micCmd       *exec.Cmd
-	camCmd       *exec.Cmd
-	echoModuleID string
+	camCmd        *exec.Cmd
+	camPreviewCmd *exec.Cmd
+	camPreviewIn  io.WriteCloser
+	echoModuleID  string
+	currentVideoOrientation int
 )
 
 func unloadWstuiEchoModules() {
@@ -223,6 +226,14 @@ func cleanupCallMedia() {
 	if micCmd != nil && micCmd.Process != nil {
 		_ = micCmd.Process.Kill()
 		micCmd = nil
+	}
+	if camPreviewIn != nil {
+		_ = camPreviewIn.Close()
+		camPreviewIn = nil
+	}
+	if camPreviewCmd != nil && camPreviewCmd.Process != nil {
+		_ = camPreviewCmd.Process.Kill()
+		camPreviewCmd = nil
 	}
 	if camCmd != nil && camCmd.Process != nil {
 		_ = camCmd.Process.Kill()
@@ -1113,6 +1124,51 @@ func C_AnswerCall(callID *C.char) C.bool {
 		}
 	}
 
+	// Launch webcam preview window (ffplay)
+	if _, err := exec.LookPath("ffplay"); err == nil {
+		pCmd := exec.Command("ffplay",
+			"-probesize", "100000",
+			"-analyzeduration", "100000",
+			"-flags", "low_delay",
+			"-framedrop",
+			"-sync", "ext",
+			"-vf", "setpts=0",
+			"-window_title", "Tu Cámara (Preview)",
+			"-x", "320",
+			"-y", "240",
+			"-f", "h264",
+			"-i", "pipe:0",
+		)
+		pLog, _ := os.OpenFile("/tmp/wstui_cam_preview.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+		if pLog != nil {
+			pCmd.Stderr = pLog
+			pCmd.Stdout = pLog
+		}
+		pIn, pErr := pCmd.StdinPipe()
+		if pErr == nil && pCmd.Start() == nil {
+			LOG_INFO("Webcam preview (ffplay) started with PID %d", pCmd.Process.Pid)
+			activeCallMu.Lock()
+			camPreviewCmd = pCmd
+			camPreviewIn = pIn
+			activeCallMu.Unlock()
+
+			go func() {
+				_ = pCmd.Wait()
+				LOG_INFO("Webcam preview process exited")
+				activeCallMu.Lock()
+				if camPreviewCmd == pCmd {
+					camPreviewCmd = nil
+					camPreviewIn = nil
+				}
+				activeCallMu.Unlock()
+			}()
+		} else {
+			LOG_WARN("Could not start webcam preview: %v", pErr)
+		}
+	}
+
+	currentVideoOrientation = 0
+
 	if err := call.Answer(); err != nil {
 		LOG_ERROR("call.Answer error: %v", err)
 		cleanupCallMedia()
@@ -1177,6 +1233,13 @@ func streamWebcamToCall(call *meowcaller.Call, r io.Reader) {
 					if err := call.SendVideo(au); err != nil {
 						LOG_WARN("SendVideo error: %v", err)
 					}
+
+					activeCallMu.Lock()
+					previewPipe := camPreviewIn
+					activeCallMu.Unlock()
+					if previewPipe != nil {
+						_, _ = previewPipe.Write(au)
+					}
 				}
 			}
 		}
@@ -1199,6 +1262,22 @@ func C_HangupCall() C.bool {
 		return C.bool(true)
 	}
 	return C.bool(false)
+}
+
+//export C_RotateCamera
+func C_RotateCamera() C.int {
+	activeCallMu.Lock()
+	call := activeCall
+	activeCallMu.Unlock()
+
+	if call == nil {
+		return -1
+	}
+
+	currentVideoOrientation = (currentVideoOrientation + 1) % 4
+	_ = call.SetVideoOrientation(currentVideoOrientation)
+	LOG_INFO("Camera orientation rotated to %d (%d°)", currentVideoOrientation, currentVideoOrientation*90)
+	return C.int(currentVideoOrientation)
 }
 
 //export C_RejectCall

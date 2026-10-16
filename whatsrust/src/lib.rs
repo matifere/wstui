@@ -1,5 +1,5 @@
 use std::{
-    ffi::{CStr, CString, c_char, c_void},
+    ffi::{CStr, CString, c_char, c_int, c_void},
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -289,6 +289,7 @@ unsafe extern "C" {
     fn C_RejectCall(call_from: *const c_char, call_id: *const c_char) -> bool;
     fn C_AnswerCall(call_id: *const c_char) -> bool;
     fn C_HangupCall() -> bool;
+    fn C_RotateCamera() -> c_int;
 
     fn C_MarkAsRead(msg_id: *const *const c_char, num_msg: usize, chat_jid: CJID, sender_jid: CJID);
 
@@ -317,6 +318,10 @@ pub fn answer_call(call_id: &str) -> bool {
 
 pub fn hangup_call() -> bool {
     unsafe { C_HangupCall() }
+}
+
+pub fn rotate_camera() -> i32 {
+    unsafe { C_RotateCamera() }
 }
 
 pub fn reject_call(caller: &JID, call_id: &str) -> bool {
