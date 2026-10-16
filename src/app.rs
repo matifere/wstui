@@ -138,6 +138,7 @@ pub struct App<'a> {
     pub sticker_list_state: ListState,
 
     pub incoming_call: Option<IncomingCall>,
+    pub active_call: Option<IncomingCall>,
 
     pub should_quit: bool,
 
@@ -204,6 +205,7 @@ impl Default for App<'_> {
             sticker_list_state: ListState::default(),
 
             incoming_call: None,
+            active_call: None,
 
             show_logs: false,
             vim: Vim::new(vim::Mode::Insert),
@@ -508,6 +510,11 @@ impl App<'_> {
                         if let Some(current) = &self.incoming_call {
                             if current.call_id == call_id {
                                 self.incoming_call = None;
+                            }
+                        }
+                        if let Some(current) = &self.active_call {
+                            if current.call_id == call_id {
+                                self.active_call = None;
                             }
                         }
                         log::info!("Llamada terminada: {} (motivo: {})", call_id, reason);
@@ -945,6 +952,18 @@ impl App<'_> {
 
     pub fn accept_incoming_call(&mut self) {
         if let Some(call) = self.incoming_call.take() {
+            log::info!("Contestando llamada nativamente (ffplay/audio): {}", call.call_id);
+            let ok = wr::answer_call(&call.call_id);
+            if ok {
+                self.active_call = Some(call);
+            } else {
+                log::error!("Error al contestar llamada nativamente");
+            }
+        }
+    }
+
+    pub fn accept_incoming_call_browser(&mut self) {
+        if let Some(call) = self.incoming_call.take() {
             let jid_str = call.caller.as_ref();
             let url = if jid_str.ends_with("@s.whatsapp.net") {
                 let phone = jid_str.split('@').next().unwrap_or(jid_str);
@@ -960,6 +979,13 @@ impl App<'_> {
         if let Some(call) = self.incoming_call.take() {
             wr::reject_call(&call.caller, &call.call_id);
             log::info!("Llamada rechazada: {}", call.call_id);
+        }
+    }
+
+    pub fn hangup_active_call(&mut self) {
+        if let Some(call) = self.active_call.take() {
+            wr::hangup_call();
+            log::info!("Llamada finalizada: {}", call.call_id);
         }
     }
 

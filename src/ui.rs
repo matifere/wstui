@@ -92,6 +92,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if let Some(call) = app.incoming_call.clone() {
         render_incoming_call(frame, app, &call, frame.area());
+    } else if let Some(call) = &app.active_call {
+        render_active_call_indicator(frame, app, call, frame.area());
     }
 }
 
@@ -396,8 +398,8 @@ fn render_sticker_picker(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn render_incoming_call(frame: &mut Frame, app: &App, call: &crate::app::IncomingCall, area: Rect) {
-    let popup_width = 64.min(area.width.saturating_sub(4));
-    let popup_height = 9.min(area.height.saturating_sub(2));
+    let popup_width = 68.min(area.width.saturating_sub(4));
+    let popup_height = 10.min(area.height.saturating_sub(2));
     let x = (area.width.saturating_sub(popup_width)) / 2;
     let y = (area.height.saturating_sub(popup_height)) / 2;
     let popup_area = Rect::new(x, y, popup_width, popup_height);
@@ -435,11 +437,40 @@ fn render_incoming_call(frame: &mut Frame, app: &App, call: &crate::app::Incomin
         Line::from(""),
         Line::from(vec![
             Span::styled(" [a / Enter] ", Style::default().fg(Color::Green).bold()),
-            Span::styled("Atender en navegador    ", Style::default().fg(Color::White)),
-            Span::styled("[r / Esc] ", Style::default().fg(Color::Red).bold()),
+            Span::styled("Atender nativo (ffplay)  ", Style::default().fg(Color::White)),
+            Span::styled("[b] ", Style::default().fg(Color::Cyan).bold()),
+            Span::styled("Navegador", Style::default().fg(Color::White)),
+        ]),
+        Line::from(vec![
+            Span::styled(" [r / Esc]   ", Style::default().fg(Color::Red).bold()),
             Span::styled("Rechazar llamada", Style::default().fg(Color::White)),
         ]),
     ]);
+
+    frame.render_widget(content, inner);
+}
+
+fn render_active_call_indicator(frame: &mut Frame, app: &App, call: &crate::app::IncomingCall, area: Rect) {
+    let caller_name = app.contact_name(&call.caller);
+    let type_icon = if call.is_video { "📹" } else { "📞" };
+    let text = format!(" {} En llamada: {} [Ctrl+H: Cortar] ", type_icon, caller_name);
+    let width = (text.len() as u16 + 2).min(area.width.saturating_sub(4));
+    let pill_area = Rect::new(area.width.saturating_sub(width + 2), 0, width, 3);
+
+    frame.render_widget(Clear, pill_area);
+
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Green).bold());
+
+    let inner = block.inner(pill_area);
+    frame.render_widget(block, pill_area);
+
+    let content = Paragraph::new(Line::from(vec![
+        Span::styled(format!(" {} ", type_icon), Style::default().fg(Color::Green).bold()),
+        Span::styled(caller_name.to_string(), Style::default().fg(Color::White).bold()),
+        Span::styled(" [Ctrl+H: Cortar]", Style::default().fg(Color::LightRed).bold()),
+    ]));
 
     frame.render_widget(content, inner);
 }

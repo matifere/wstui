@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"go.mau.fi/whatsmeow"
+	whatsmeow "github.com/polymorfa/hypermeow"
 )
 
 const (

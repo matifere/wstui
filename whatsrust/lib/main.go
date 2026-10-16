@@ -128,32 +128,70 @@ static void callLogInfo(LogHandler hdl, const char* msg, uint8_t level) {
 import "C"
 import (
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"math"
 	"mime"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"sort"
+	"sync"
 	"time"
 	"unsafe"
 
 	"google.golang.org/protobuf/proto"
 
 	_ "github.com/mattn/go-sqlite3"
-	"go.mau.fi/whatsmeow"
-	"go.mau.fi/whatsmeow/appstate"
-	"go.mau.fi/whatsmeow/proto/waE2E"
-	"go.mau.fi/whatsmeow/proto/waWeb"
-	"go.mau.fi/whatsmeow/store/sqlstore"
-	"go.mau.fi/whatsmeow/types"
-	"go.mau.fi/whatsmeow/types/events"
-	waLog "go.mau.fi/whatsmeow/util/log"
+	whatsmeow "github.com/polymorfa/hypermeow"
+	"github.com/polymorfa/hypermeow/appstate"
+	"github.com/polymorfa/hypermeow/proto/waE2E"
+	"github.com/polymorfa/hypermeow/proto/waWeb"
+	"github.com/polymorfa/hypermeow/store/sqlstore"
+	"github.com/polymorfa/hypermeow/types"
+	"github.com/polymorfa/hypermeow/types/events"
+	waLog "github.com/polymorfa/hypermeow/util/log"
+	"github.com/purpshell/meowcaller"
 )
 
 var client *whatsmeow.Client
+var callerClient *meowcaller.Client
 var qrChan <-chan whatsmeow.QRChannelItem
+
+var (
+	activeCallMu sync.Mutex
+	activeCall   *meowcaller.Call
+	videoCmd     *exec.Cmd
+	videoStdin   io.WriteCloser
+	audioCmd     *exec.Cmd
+	audioStdin   io.WriteCloser
+)
+
+func cleanupCallMedia() {
+	activeCallMu.Lock()
+	defer activeCallMu.Unlock()
+
+	if videoStdin != nil {
+		_ = videoStdin.Close()
+		videoStdin = nil
+	}
+	if videoCmd != nil && videoCmd.Process != nil {
+		_ = videoCmd.Process.Kill()
+		videoCmd = nil
+	}
+	if audioStdin != nil {
+		_ = audioStdin.Close()
+		audioStdin = nil
+	}
+	if audioCmd != nil && audioCmd.Process != nil {
+		_ = audioCmd.Process.Kill()
+		audioCmd = nil
+	}
+	activeCall = nil
+}
 
 var logHandler C.LogHandler
 var messageHandler C.MessageHandler
@@ -323,6 +361,18 @@ func C_NewClient(dbPath *C.char) {
 	deviceStore, _ := container.GetFirstDevice(context.Background())
 	clientLog := &WrLogger{}
 	client = whatsmeow.NewClient(deviceStore, clientLog)
+	callerClient = meowcaller.NewClient(client)
+	callerClient.OnIncomingCall(func(call *meowcaller.Call) {
+		LOG_INFO("meowcaller OnIncomingCall: %s from %s", call.ID(), call.Peer().String())
+		activeCallMu.Lock()
+		activeCall = call
+		activeCallMu.Unlock()
+
+		call.OnEnd(func(reason string) {
+			LOG_INFO("Call %s ended: %s", call.ID(), reason)
+			cleanupCallMedia()
+		})
+	})
 }
 
 func ParseWebMessageInfo(selfJid types.JID, chatJid types.JID, webMsg *waWeb.WebMessageInfo) *types.MessageInfo {
@@ -786,20 +836,153 @@ func C_DownloadFile(fileId *C.char, basePath *C.char) C.uint8_t {
 	return C.uint8_t(status)
 }
 
+//export C_AnswerCall
+func C_AnswerCall(callID *C.char) C.bool {
+	activeCallMu.Lock()
+	call := activeCall
+	activeCallMu.Unlock()
+
+	if call == nil {
+		LOG_ERROR("No active call to answer")
+		return C.bool(false)
+	}
+
+	targetID := ""
+	if callID != nil {
+		targetID = C.GoString(callID)
+	}
+	if targetID != "" && call.ID() != targetID {
+		LOG_WARN("Active call ID %s doesn't match requested %s", call.ID(), targetID)
+	}
+
+	// Launch ffplay for H.264 video stream
+	vCmd := exec.Command("ffplay",
+		"-f", "h264",
+		"-probesize", "32",
+		"-fflags", "nobuffer",
+		"-flags", "low_delay",
+		"-framedrop",
+		"-window_title", fmt.Sprintf("WhatsApp Call - %s", call.Peer().String()),
+		"-i", "pipe:0",
+	)
+	vIn, err := vCmd.StdinPipe()
+	if err == nil && vCmd.Start() == nil {
+		activeCallMu.Lock()
+		videoCmd = vCmd
+		videoStdin = vIn
+		activeCallMu.Unlock()
+
+		go func() {
+			_ = vCmd.Wait()
+			activeCallMu.Lock()
+			if videoCmd == vCmd {
+				videoCmd = nil
+				videoStdin = nil
+			}
+			activeCallMu.Unlock()
+		}()
+
+		call.ReceiveVideo(meowcaller.VideoSinkFunc(func(au []byte) {
+			activeCallMu.Lock()
+			pipe := videoStdin
+			activeCallMu.Unlock()
+			if pipe != nil {
+				_, _ = pipe.Write(au)
+			}
+		}))
+	} else {
+		LOG_ERROR("Failed to start ffplay for video: %v", err)
+	}
+
+	// Launch audio player (pw-play -> paplay -> ffplay)
+	var aCmd *exec.Cmd
+	if _, err := exec.LookPath("pw-play"); err == nil {
+		aCmd = exec.Command("pw-play", "--rate", "16000", "--channels", "1", "--format", "s16", "-")
+	} else if _, err := exec.LookPath("paplay"); err == nil {
+		aCmd = exec.Command("paplay", "--raw", "--rate=16000", "--channels=1", "--format=s16le")
+	} else {
+		aCmd = exec.Command("ffplay", "-f", "s16le", "-ar", "16000", "-ac", "1", "-nodisp", "-autoexit", "-i", "pipe:0")
+	}
+
+	aIn, aErr := aCmd.StdinPipe()
+	if aErr == nil && aCmd.Start() == nil {
+		activeCallMu.Lock()
+		audioCmd = aCmd
+		audioStdin = aIn
+		activeCallMu.Unlock()
+
+		go func() {
+			_ = aCmd.Wait()
+			activeCallMu.Lock()
+			if audioCmd == aCmd {
+				audioCmd = nil
+				audioStdin = nil
+			}
+			activeCallMu.Unlock()
+		}()
+
+		call.Receive(meowcaller.SinkFunc(func(pcm []float32) {
+			activeCallMu.Lock()
+			pipe := audioStdin
+			activeCallMu.Unlock()
+			if pipe != nil {
+				buf := make([]byte, len(pcm)*2)
+				for i, sample := range pcm {
+					if sample > 1.0 {
+						sample = 1.0
+					} else if sample < -1.0 {
+						sample = -1.0
+					}
+					val := int16(sample * 32767.0)
+					binary.LittleEndian.PutUint16(buf[i*2:], uint16(val))
+				}
+				_, _ = pipe.Write(buf)
+			}
+		}))
+	} else {
+		LOG_ERROR("Failed to start audio player: %v", aErr)
+	}
+
+	if err := call.Answer(); err != nil {
+		LOG_ERROR("call.Answer error: %v", err)
+		cleanupCallMedia()
+		return C.bool(false)
+	}
+
+	LOG_INFO("Successfully answered call %s", call.ID())
+	return C.bool(true)
+}
+
+//export C_HangupCall
+func C_HangupCall() C.bool {
+	activeCallMu.Lock()
+	call := activeCall
+	activeCallMu.Unlock()
+
+	if call != nil {
+		_ = call.Hangup()
+		cleanupCallMedia()
+		return C.bool(true)
+	}
+	return C.bool(false)
+}
+
 //export C_RejectCall
 func C_RejectCall(callFrom *C.char, callID *C.char) C.bool {
-	if client == nil {
-		return C.bool(false)
+	activeCallMu.Lock()
+	call := activeCall
+	activeCallMu.Unlock()
+
+	if call != nil {
+		_ = call.Reject()
+		cleanupCallMedia()
 	}
-	fromJid, err := types.ParseJID(C.GoString(callFrom))
-	if err != nil {
-		LOG_ERROR("RejectCall invalid JID: %v", err)
-		return C.bool(false)
-	}
-	err = client.RejectCall(context.Background(), fromJid, C.GoString(callID))
-	if err != nil {
-		LOG_ERROR("RejectCall error: %v", err)
-		return C.bool(false)
+
+	if client != nil && callFrom != nil && callID != nil {
+		fromJid, err := types.ParseJID(C.GoString(callFrom))
+		if err == nil {
+			_ = client.RejectCall(context.Background(), fromJid, C.GoString(callID))
+		}
 	}
 	return C.bool(true)
 }
@@ -849,6 +1032,7 @@ func AddEventHandlers() {
 			C.free(unsafe.Pointer(cCallOffer))
 
 		case *events.CallTerminate:
+			cleanupCallMedia()
 			callID := C.CString(evt.CallID)
 			defer C.free(unsafe.Pointer(callID))
 			reason := C.CString(evt.Reason)

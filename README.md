@@ -30,10 +30,16 @@ This fork introduces visual improvements, Neovim ergonomics, native sticker send
 - **Bypass Redundant Downloads:** If a sticker was already received or sent anywhere, wstui detects the local file and avoids re-downloading it.
 - **Clean Sticker List:** The sticker picker automatically filters out duplicates so your gallery stays clean and organized.
 
-### 📞 Video & Voice Call Companion
-- **Incoming Call Alerts & Actions:** Real-time interception of WhatsApp `CallOffer` events. wstui displays a desktop notification and a modal popup showing the caller's name and call type (voice/video):
-  - **`a`** or **`Enter`**: Open your preferred browser at `web.whatsapp.com` to accept the call.
-  - **`r`** or **`Esc`**: Reject and hang up the call directly from the terminal via WhatsApp protocol.
+### 📞 Native Video & Voice Calls (Powered by `meowcaller` & `ffplay`)
+- **Native VoIP Interception:** Full WhatsApp calling stack integration using `meowcaller`. Intercepts incoming calls at the protocol layer, negotiates SRTP/STUN keys, and answers directly from the terminal without needing a web browser.
+- **Lightweight Native Video Window:** Pipes live Annex-B H.264 video frames directly into an ultra-low-latency `ffplay` window (`-framedrop -flags low_delay -fflags nobuffer`) with zero overhead.
+- **Ultra-Low Latency Audio:** Pipes decoded 16 kHz PCM audio directly into native Linux audio subsystems (`pw-play` for PipeWire, `paplay` for PulseAudio, or `ffplay`).
+- **Interactive Call Modal & Status Pill:**
+  - **`a`** or **`Enter`**: Atender nativo (abre la ventana de video `ffplay` y audio de inmediato).
+  - **`b`**: Abrir en el navegador predeterminado (Zen Browser, Firefox, etc.) en WhatsApp Web.
+  - **`r`** or **`Esc`**: Rechazar la llamada inmediatamente a nivel de protocolo WhatsApp.
+  - **`Ctrl+H`**: Cortar una llamada activa en cualquier momento desde la TUI.
+  - **Active Call Indicator:** Banner superior en la TUI mientras la llamada está en curso.
 - **One-Key Outgoing Calls (`v` / `Space v`):** Select any contact and press `v` (or `Space v` in normal mode) to immediately launch your system's default browser (e.g. Zen Browser, Firefox, Chrome) focused on that chat, ready to call.
 - **Configurable Browser:** Automatically defaults to your desktop environment's default web browser. Can also be overridden with `WSTUI_BROWSER` (e.g. `export WSTUI_BROWSER="zen --new-window %s"`).
 
@@ -43,7 +49,8 @@ This fork introduces visual improvements, Neovim ergonomics, native sticker send
 
 - **Rust** (2024 edition; recent stable toolchain)
 - **Go** (tested with 1.22+)
-- **Chafa** (`libchafa-dev` or `chafa` on Arch Linux) for terminal image rendering
+- **Chafa** (`libchafa-dev` or `chafa` on Arch Linux) for terminal sticker rendering
+- **FFmpeg / ffplay** (`ffmpeg` package) for native video call rendering
 
 ---
 

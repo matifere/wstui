@@ -287,6 +287,8 @@ unsafe extern "C" {
     fn C_PairPhone(phone: *const c_char) -> *const c_char;
     fn C_DownloadFile(file_id: *const c_char, base_path: *const c_char) -> u8;
     fn C_RejectCall(call_from: *const c_char, call_id: *const c_char) -> bool;
+    fn C_AnswerCall(call_id: *const c_char) -> bool;
+    fn C_HangupCall() -> bool;
 
     fn C_MarkAsRead(msg_id: *const *const c_char, num_msg: usize, chat_jid: CJID, sender_jid: CJID);
 
@@ -306,6 +308,15 @@ pub fn download_file(file_id: &FileId, base_path: &Path) -> Result<(), DownloadF
     } else {
         Err(DownloadFailed)
     }
+}
+
+pub fn answer_call(call_id: &str) -> bool {
+    let c_call_id = CString::new(call_id).unwrap();
+    unsafe { C_AnswerCall(c_call_id.as_ptr()) }
+}
+
+pub fn hangup_call() -> bool {
+    unsafe { C_HangupCall() }
 }
 
 pub fn reject_call(caller: &JID, call_id: &str) -> bool {

@@ -24,10 +24,19 @@ impl App<'_> {
                 self.accept_incoming_call();
                 return;
             }
+            if self.kh.kp(&[Key::c('b')]) {
+                self.accept_incoming_call_browser();
+                return;
+            }
             if self.kh.kp(&[Key::c('r')]) || self.kh.kp(&[Key::k(KeyCode::Esc)]) {
                 self.reject_incoming_call();
                 return;
             }
+            return;
+        }
+
+        if self.active_call.is_some() && self.kh.kp(&[Key::ctrl('h')]) {
+            self.hangup_active_call();
             return;
         }
 
