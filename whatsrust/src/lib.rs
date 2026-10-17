@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     ffi::{CStr, CString, c_char, c_int, c_void},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -60,6 +61,20 @@ struct CContactEntry {
 #[repr(C)]
 struct CGetContactsResult {
     entries: *const CContactEntry,
+    size: u32,
+}
+
+#[repr(C)]
+struct CChatSettingEntry {
+    jid: CJID,
+    muted_until: i64,
+    pinned: bool,
+    archived: bool,
+}
+
+#[repr(C)]
+struct CGetAllChatSettingsResult {
+    entries: *const CChatSettingEntry,
     size: u32,
 }
 
@@ -224,12 +239,35 @@ pub struct Contact {
     pub business_name: Arc<str>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ChatSettings {
     pub found: bool,
     pub muted_until: i64,
     pub pinned: bool,
     pub archived: bool,
+}
+
+impl ChatSettings {
+    pub fn is_muted(&self) -> bool {
+        if !self.found {
+            return false;
+        }
+        if self.muted_until < 0 {
+            return true;
+        }
+        if self.muted_until == 0 {
+            return false;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs() as i64)
+            .unwrap_or_default();
+        self.muted_until > now
+    }
+
+    pub fn is_archived(&self) -> bool {
+        self.found && self.archived
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -283,6 +321,8 @@ unsafe extern "C" {
     );
     fn C_GetContacts() -> CGetContactsResult;
     fn C_GetChatSettings(jid: CJID) -> CChatSettings;
+    fn C_GetAllChatSettings() -> CGetAllChatSettingsResult;
+    fn C_FreeChatSettingsResult(res: CGetAllChatSettingsResult);
     fn C_Disconnect();
     fn C_PairPhone(phone: *const c_char) -> *const c_char;
     fn C_DownloadFile(file_id: *const c_char, base_path: *const c_char) -> u8;
@@ -648,4 +688,27 @@ pub fn get_chat_settings(jid: &JID) -> ChatSettings {
         pinned: settings.pinned,
         archived: settings.archived,
     }
+}
+
+pub fn get_all_chat_settings() -> HashMap<JID, ChatSettings> {
+    let res = unsafe { C_GetAllChatSettings() };
+    if res.entries.is_null() || res.size == 0 {
+        return HashMap::new();
+    }
+    let slice = unsafe { std::slice::from_raw_parts(res.entries, res.size as usize) };
+    let map = slice
+        .iter()
+        .map(|entry| {
+            let jid: JID = (&entry.jid).into();
+            let settings = ChatSettings {
+                found: true,
+                muted_until: entry.muted_until,
+                pinned: entry.pinned,
+                archived: entry.archived,
+            };
+            (jid, settings)
+        })
+        .collect();
+    unsafe { C_FreeChatSettingsResult(res) };
+    map
 }

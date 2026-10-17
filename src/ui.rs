@@ -182,7 +182,12 @@ fn render_contacts(frame: &mut Frame, app: &mut App, area: Rect) {
         .map(|chat| {
             let name = app.contact_name(chat);
             let (badge, badge_color) = get_contact_badge(chat, &name);
-            Line::from(vec![
+            let settings = app.chat_settings.get(chat);
+            let is_muted = settings.map(|s| s.is_muted()).unwrap_or(false);
+            let is_archived = settings.map(|s| s.is_archived()).unwrap_or(false);
+            let is_pinned = settings.map(|s| s.pinned).unwrap_or(false);
+
+            let mut spans = vec![
                 Span::styled(
                     format!(" {badge} "),
                     Style::default()
@@ -191,8 +196,31 @@ fn render_contacts(frame: &mut Frame, app: &mut App, area: Rect) {
                         .bold(),
                 ),
                 Span::raw(" "),
-                Span::raw(name.to_string()),
-            ])
+            ];
+
+            let name_style = if is_archived {
+                Style::default().fg(Color::DarkGray)
+            } else if is_muted {
+                Style::default().fg(Color::Gray)
+            } else {
+                Style::default()
+            };
+            spans.push(Span::styled(name.to_string(), name_style));
+
+            if is_pinned {
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled("📌", Style::default().fg(Color::Cyan)));
+            }
+            if is_muted {
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled("🔇", Style::default().fg(Color::DarkGray)));
+            }
+            if is_archived {
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled("📦", Style::default().fg(Color::DarkGray)));
+            }
+
+            Line::from(spans)
         })
         .collect::<Vec<_>>();
 

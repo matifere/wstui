@@ -308,6 +308,8 @@ pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<(
     let is_group = chat_jid.0.ends_with("@g.us");
     let icon = if is_group { "👥 Grupo: " } else { "💬 Chat con: " };
     let name = app.contact_name(&chat_jid);
+    let is_muted = app.chat_settings.get(&chat_jid).map(|s| s.is_muted()).unwrap_or(false);
+    let is_archived = app.chat_settings.get(&chat_jid).map(|s| s.is_archived()).unwrap_or(false);
 
     let bottom_help = Line::from(vec![
         Span::styled(
@@ -374,13 +376,22 @@ pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<(
                 );
             }
 
-            let line1 = Line::from(vec![
+            let mut line1_spans = vec![
                 Span::styled(if is_group { "👥 Grupo: " } else { "💬 " }, Style::default().fg(Color::Cyan).bold()),
                 Span::styled(
                     name.to_string(),
                     Style::default().fg(Color::Rgb(255, 215, 0)).bold(),
                 ),
-            ]);
+            ];
+            if is_muted {
+                line1_spans.push(Span::raw(" "));
+                line1_spans.push(Span::styled("🔇 Silenciado", Style::default().fg(Color::DarkGray)));
+            }
+            if is_archived {
+                line1_spans.push(Span::raw(" "));
+                line1_spans.push(Span::styled("📦 Archivado", Style::default().fg(Color::DarkGray)));
+            }
+            let line1 = Line::from(line1_spans);
 
             let phone_or_id = if is_group {
                 let id = chat_jid.0.split('@').next().unwrap_or(&chat_jid.0);
@@ -401,14 +412,25 @@ pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<(
             ]);
 
             let items_count = app.chat_messages.get(&chat_jid).map(|m| m.len()).unwrap_or(0);
-            let has_pic = if app.avatar_cache.contains_key(&chat_jid) {
-                " • 🖼 Foto de perfil"
+            let mut status_extra = Vec::new();
+            if app.avatar_cache.contains_key(&chat_jid) {
+                status_extra.push("🖼 Foto de perfil");
+            }
+            if is_muted {
+                status_extra.push("🔇 Silenciado");
+            }
+            if is_archived {
+                status_extra.push("📦 Archivado");
+            }
+            let extra_str = if status_extra.is_empty() {
+                String::new()
             } else {
-                ""
+                format!(" • {}", status_extra.join(" • "))
             };
+
             let line3 = Line::from(vec![
                 Span::styled(
-                    format!("💬 {} mensajes{}", items_count, has_pic),
+                    format!("💬 {} mensajes cargados{}", items_count, extra_str),
                     Style::default().fg(Color::DarkGray),
                 ),
             ]);
@@ -427,15 +449,25 @@ pub fn render_messages(frame: &mut Frame, app: &mut App, area: Rect) -> Option<(
             .title_bottom(bottom_help)
             .border_style(Style::default().fg(border_color))
     } else {
-        let title_line = Line::from(vec![
+        let mut title_spans = vec![
             Span::raw(" "),
             Span::styled(icon, Style::default().fg(Color::Cyan).bold()),
             Span::styled(
                 name.to_string(),
                 Style::default().fg(Color::Rgb(255, 215, 0)).bold().underlined(),
             ),
-            Span::raw(" "),
-        ]);
+        ];
+        if is_muted {
+            title_spans.push(Span::raw(" "));
+            title_spans.push(Span::styled("🔇", Style::default().fg(Color::DarkGray)));
+        }
+        if is_archived {
+            title_spans.push(Span::raw(" "));
+            title_spans.push(Span::styled("📦", Style::default().fg(Color::DarkGray)));
+        }
+        title_spans.push(Span::raw(" "));
+        let title_line = Line::from(title_spans);
+
         Block::bordered()
             .border_type(BorderType::Rounded)
             .title(title_line)

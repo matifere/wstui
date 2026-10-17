@@ -29,6 +29,18 @@ typedef struct {
 } ChatSettings;
 
 typedef struct {
+	JID jid;
+	int64_t muted_until;
+	bool pinned;
+	bool archived;
+} CChatSettingEntry;
+
+typedef struct {
+	CChatSettingEntry* entries;
+	uint32_t size;
+} GetAllChatSettingsResult;
+
+typedef struct {
 	ContactEntry* entries;
 	uint32_t size;
 } GetContactsResult;
@@ -129,6 +141,7 @@ import "C"
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
@@ -164,6 +177,7 @@ import (
 var client *whatsmeow.Client
 var callerClient *meowcaller.Client
 var qrChan <-chan whatsmeow.QRChannelItem
+var whatsmeowDbPath string
 
 var (
 	activeCallMu sync.Mutex
@@ -409,6 +423,7 @@ func C_SetMessageHandler(callback C.MessageHandlerCallback, data unsafe.Pointer)
 //export C_NewClient
 func C_NewClient(dbPath *C.char) {
 	goPath := C.GoString(dbPath)
+	whatsmeowDbPath = goPath
 	dbLog := &WrLogger{}
 	container, err := sqlstore.New(context.Background(), "sqlite3", "file:"+goPath+"?_foreign_keys=on", dbLog)
 	if err != nil {
@@ -1402,16 +1417,28 @@ func AddEventHandlers() {
 			LOG_DEBUG("MarkChatAsRead %v", evt.JID)
 
 		case *events.AppStateSyncComplete:
-			LOG_INFO("AppStateSyncComplete %v", evt)
-			if evt.Name == appstate.WAPatchRegular {
-				LOG_INFO("AppStateSyncComplete (WAPatchRegular) %v", evt)
-
-				cevent := C.Event{
-					kind: C.uint8_t(EventTypeAppStateSyncComplete),
-					data: nil,
-				}
-				C.callEventCallback(eventHandler, &cevent)
+			LOG_INFO("AppStateSyncComplete (%s) %v", evt.Name, evt)
+			cevent := C.Event{
+				kind: C.uint8_t(EventTypeAppStateSyncComplete),
+				data: nil,
 			}
+			C.callEventCallback(eventHandler, &cevent)
+
+		case *events.Mute:
+			LOG_INFO("Mute event for %v: %+v", evt.JID, evt.Action)
+			cevent := C.Event{
+				kind: C.uint8_t(EventTypeAppStateSyncComplete),
+				data: nil,
+			}
+			C.callEventCallback(eventHandler, &cevent)
+
+		case *events.Archive:
+			LOG_INFO("Archive event for %v: %+v", evt.JID, evt.Action)
+			cevent := C.Event{
+				kind: C.uint8_t(EventTypeAppStateSyncComplete),
+				data: nil,
+			}
+			C.callEventCallback(eventHandler, &cevent)
 
 		case *events.CallOffer:
 			callID := C.CString(evt.CallID)
@@ -1564,6 +1591,21 @@ func C_Connect(handler C.QrCallback, data unsafe.Pointer) {
 	}
 
 	AddEventHandlers()
+
+	go func() {
+		time.Sleep(2 * time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		for _, name := range appstate.AllPatchNames {
+			if !client.IsConnected() {
+				break
+			}
+			LOG_INFO("Syncing app state %s...", name)
+			if err := client.FetchAppState(ctx, name, false, false); err != nil {
+				LOG_WARN("FetchAppState %s: %v", name, err)
+			}
+		}
+	}()
 }
 
 //export C_PairPhone
@@ -1697,6 +1739,98 @@ func C_GetChatSettings(cjid C.JID) C.ChatSettings {
 		muted_until: C.int64_t(mutedUntil),
 		pinned:      C.bool(settings.Pinned),
 		archived:    C.bool(settings.Archived),
+	}
+}
+
+//export C_GetAllChatSettings
+func C_GetAllChatSettings() C.GetAllChatSettingsResult {
+	if client == nil || client.Store == nil || client.Store.ID == nil || whatsmeowDbPath == "" {
+		return C.GetAllChatSettingsResult{entries: nil, size: 0}
+	}
+
+	db, err := sql.Open("sqlite3", "file:"+whatsmeowDbPath+"?mode=ro")
+	if err != nil {
+		LOG_ERROR("GetAllChatSettings sql.Open: %v", err)
+		return C.GetAllChatSettingsResult{entries: nil, size: 0}
+	}
+	defer db.Close()
+
+	ourJid := client.Store.ID.String()
+	rows, err := db.Query("SELECT chat_jid, muted_until, pinned, archived FROM whatsmeow_chat_settings WHERE our_jid = ?", ourJid)
+	if err != nil {
+		LOG_ERROR("GetAllChatSettings query: %v", err)
+		return C.GetAllChatSettingsResult{entries: nil, size: 0}
+	}
+	defer rows.Close()
+
+	var entries []C.CChatSettingEntry
+	ctx := context.Background()
+
+	for rows.Next() {
+		var chatJidStr string
+		var mutedUntil int64
+		var pinned bool
+		var archived bool
+		if err := rows.Scan(&chatJidStr, &mutedUntil, &pinned, &archived); err != nil {
+			continue
+		}
+		chatJid, err := types.ParseJID(chatJidStr)
+		if err != nil {
+			continue
+		}
+
+		entries = append(entries, C.CChatSettingEntry{
+			jid:         jidToC(chatJid),
+			muted_until: C.int64_t(mutedUntil),
+			pinned:      C.bool(pinned),
+			archived:    C.bool(archived),
+		})
+
+		// Also map alternate JID (LID <-> PN) if available
+		if chatJid.Server == types.DefaultUserServer && client.Store.LIDs != nil {
+			if lid, _ := client.Store.LIDs.GetLIDForPN(ctx, chatJid); !lid.IsEmpty() {
+				entries = append(entries, C.CChatSettingEntry{
+					jid:         jidToC(lid),
+					muted_until: C.int64_t(mutedUntil),
+					pinned:      C.bool(pinned),
+					archived:    C.bool(archived),
+				})
+			}
+		} else if chatJid.Server == types.HiddenUserServer && client.Store.LIDs != nil {
+			if pn, _ := client.Store.LIDs.GetPNForLID(ctx, chatJid); !pn.IsEmpty() {
+				entries = append(entries, C.CChatSettingEntry{
+					jid:         jidToC(pn),
+					muted_until: C.int64_t(mutedUntil),
+					pinned:      C.bool(pinned),
+					archived:    C.bool(archived),
+				})
+			}
+		}
+	}
+
+	n := len(entries)
+	if n == 0 {
+		return C.GetAllChatSettingsResult{entries: nil, size: 0}
+	}
+
+	cEntries := C.malloc(C.size_t(n) * C.size_t(unsafe.Sizeof(C.CChatSettingEntry{})))
+	slice := unsafe.Slice((*C.CChatSettingEntry)(cEntries), n)
+	copy(slice, entries)
+
+	return C.GetAllChatSettingsResult{
+		entries: (*C.CChatSettingEntry)(cEntries),
+		size:    C.uint32_t(n),
+	}
+}
+
+//export C_FreeChatSettingsResult
+func C_FreeChatSettingsResult(res C.GetAllChatSettingsResult) {
+	if res.entries != nil {
+		slice := unsafe.Slice(res.entries, res.size)
+		for i := range slice {
+			C.free(unsafe.Pointer(slice[i].jid))
+		}
+		C.free(unsafe.Pointer(res.entries))
 	}
 }
 

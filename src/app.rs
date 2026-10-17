@@ -1,7 +1,7 @@
 use std::io::stdout;
 use std::path::PathBuf;
 use std::sync::mpsc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use std::{collections::{HashMap, HashSet}, sync::Arc, sync::Condvar, sync::Mutex};
 use std::{fs, thread};
 
@@ -121,6 +121,7 @@ pub struct App<'a> {
     pub avatar_path: PathBuf,
     pub avatar_cache: HashMap<wr::JID, StatefulProtocol>,
     pub avatar_requested: HashSet<wr::JID>,
+    pub chat_settings: HashMap<wr::JID, wr::ChatSettings>,
     pub default_protocol_type: ProtocolType,
     pub picker: Arc<Mutex<Picker>>,
 
@@ -218,6 +219,7 @@ impl Default for App<'_> {
             avatar_path,
             avatar_cache: HashMap::new(),
             avatar_requested: HashSet::new(),
+            chat_settings: HashMap::new(),
             default_protocol_type,
             quoting_message: None,
             attached_file: None,
@@ -316,8 +318,10 @@ impl App<'_> {
                 println!("Pairing code: {}", code);
             }
         });
-        // });
         info!("Connected, initializing terminal UI");
+        self.get_contacts();
+        self.refresh_chat_settings();
+        self.sort_chats();
 
         let mut terminal = match ratatui::try_init() {
             Ok(terminal) => terminal,
@@ -498,6 +502,7 @@ impl App<'_> {
                 Ok(AppInput::WhatsApp(event)) => match event {
                     wr::Event::AppStateSyncComplete => {
                         self.get_contacts();
+                        self.refresh_chat_settings();
                         self.sort_chats();
 
                         true
@@ -771,19 +776,20 @@ impl App<'_> {
             return;
         }
 
-        let chat_settings = wr::get_chat_settings(&message.info.chat);
-        info!(
-            "Chat settings for {:?}: {:?}",
-            message.info.chat, chat_settings
-        );
-        if chat_settings.found {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|duration| duration.as_secs() as i64)
-                .unwrap_or_default();
-            if chat_settings.muted_until > now {
-                return;
-            }
+        let settings = self
+            .chat_settings
+            .get(&message.info.chat)
+            .cloned()
+            .unwrap_or_else(|| wr::get_chat_settings(&message.info.chat));
+
+        if settings.is_muted() || settings.is_archived() {
+            info!(
+                "Suppressed notification for muted/archived chat {:?} (muted: {}, archived: {})",
+                message.info.chat,
+                settings.is_muted(),
+                settings.is_archived()
+            );
+            return;
         }
 
         let summary = self.contact_name(&message.info.sender);
@@ -965,6 +971,20 @@ impl App<'_> {
         }
     }
 
+    pub fn refresh_chat_settings(&mut self) {
+        let settings = wr::get_all_chat_settings();
+        self.chat_settings.extend(settings);
+    }
+
+    pub fn get_chat_settings(&mut self, jid: &wr::JID) -> wr::ChatSettings {
+        if let Some(settings) = self.chat_settings.get(jid) {
+            return settings.clone();
+        }
+        let settings = wr::get_chat_settings(jid);
+        self.chat_settings.insert(jid.clone(), settings.clone());
+        settings
+    }
+
     fn sort_chats(&mut self) {
         let mut entries: Vec<_> = self
             .chats
@@ -973,6 +993,11 @@ impl App<'_> {
             .cloned()
             .collect();
         entries.sort_by(|a, b| {
+            let a_pinned = self.chat_settings.get(&a.jid).map(|s| s.pinned).unwrap_or(false);
+            let b_pinned = self.chat_settings.get(&b.jid).map(|s| s.pinned).unwrap_or(false);
+            if a_pinned != b_pinned {
+                return b_pinned.cmp(&a_pinned);
+            }
             let a_time = a.last_message_time.unwrap_or_default();
             let b_time = b.last_message_time.unwrap_or_default();
             b_time.cmp(&a_time)
